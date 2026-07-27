@@ -88,3 +88,36 @@ def test_ui_served(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "FORGE" in r.text
+
+
+def test_rescan_endpoint(client):
+    r = client.post("/api/devices/rescan", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert "driver" in body and "added" in body
+
+
+def test_component_api_flow(client):
+    r = client.post("/api/components", json={
+        "kind": "antenna", "name": "vivaldi", "connector": "SMA",
+        "claimed_band": "0.8-6 GHz"})
+    assert r.status_code == 200
+    cid = r.json()["component_id"]
+
+    s1p = "# MHZ S RI R 50\n700 0.6 0\n900 0.1 0\n1100 0.7 0\n"
+    r = client.post(f"/api/components/{cid}/vna",
+                    files={"file": ("ant.s1p", s1p, "text/plain")})
+    assert r.status_code == 200
+    vna = r.json()["vna"]
+    assert vna["analysis"]["best_match"]["freq_hz"] == 900e6
+
+    r = client.get("/api/components")
+    assert any(c["component_id"] == cid and c["has_vna"] for c in r.json())
+
+    bad = client.post(f"/api/components/{cid}/vna",
+                      files={"file": ("bad.s1p", "# MHZ S RI R 50\njunk\n",
+                                      "text/plain")})
+    assert bad.status_code == 400
+
+    r = client.post(f"/api/components/{cid}/delete")
+    assert r.status_code == 200

@@ -14,6 +14,7 @@
     <button data-tab="live">Live RF</button>
     <button data-tab="range">Range Lab</button>
     <button data-tab="scan">Scan Studio</button>
+    <button data-tab="antenna">Antenna Lab</button>
     <button data-tab="library">Experiments</button>
     <button data-tab="safety">Safety</button>
   </nav>
@@ -30,6 +31,13 @@
       <div class="panel">
         <h2>Devices</h2>
         <div id="device-list"></div>
+        <div class="toolbar" style="margin-bottom:0">
+          <button id="rescan-btn">Rescan hardware</button>
+          <label>URI <input id="rescan-uri" type="text" size="18"
+            placeholder="ip:192.168.1.87"></label>
+          <button id="rescan-uri-btn">Connect URI</button>
+        </div>
+        <div id="rescan-status" class="mut"></div>
       </div>
       <div class="panel">
         <h2>System</h2>
@@ -150,6 +158,47 @@
         <button id="ann-add">Add annotation</button>
       </div>
       <div id="ann-list"></div>
+    </div>
+  </section>
+
+  <!-- ============ ANTENNA LAB ============ -->
+  <section id="tab-antenna" class="tab">
+    <div class="grid2">
+      <div class="panel">
+        <h2>Component inventory</h2>
+        <div class="toolbar">
+          <select id="comp-kind">
+            <option value="antenna">antenna</option>
+            <option value="cable">cable</option>
+            <option value="adapter">adapter</option>
+            <option value="attenuator">attenuator</option>
+            <option value="filter">filter</option>
+            <option value="termination">termination</option>
+          </select>
+          <input id="comp-name" type="text" size="18" placeholder="name…">
+          <input id="comp-connector" type="text" size="8" placeholder="SMA">
+          <input id="comp-band" type="text" size="14" placeholder="claimed band">
+          <button id="comp-add" class="primary">Add</button>
+        </div>
+        <div id="comp-list"></div>
+      </div>
+      <div class="panel">
+        <h2>Component detail</h2>
+        <div class="toolbar">
+          <input id="vna-file" type="file" accept=".s1p,.s2p,.S1P,.S2P">
+          <button id="vna-upload" disabled>Import VNA measurement</button>
+          <label><input type="checkbox" id="comp-pin"> pin for comparison</label>
+          <button id="comp-delete" disabled>Delete</button>
+        </div>
+        <div id="comp-bands"></div>
+        <pre id="comp-detail" class="mono">select a component</pre>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>S11 return loss <span class="mut">(solid)</span> &amp; VSWR
+        <span class="mut">(dashed, right axis)</span>
+        <span class="mut" id="antenna-meta"></span></h2>
+      <canvas id="vna-plot" width="1280" height="320"></canvas>
     </div>
   </section>
 

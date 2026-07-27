@@ -37,7 +37,12 @@ Open http://127.0.0.1:8347/ and:
    B-scan builds column by column with quality gating; toggle *remove mean
    trace* to watch the buried-target hyperbolas emerge from clutter. Scans
    resume cleanly after interruption or restart by ID.
-6. **Experiments** → every run is a self-contained package: browse, search,
+6. **Antenna Lab** → inventory your antennas, cables, and attenuators
+   (FR-RFC-001/002), import NanoVNA touchstone sweeps (`.s1p`/`.s2p`,
+   FR-RFC-003), and get S11/VSWR plots with recommended / marginal /
+   unsuitable band ratings (FR-RFC-004). Pin one component to overlay a
+   second trace for comparison.
+7. **Experiments** → every run is a self-contained package: browse, search,
    verify checksums, export/import as zip, annotate, and **Replay** — reprocess
    the stored raw I/Q with new parameters, no hardware needed.
 
@@ -113,14 +118,27 @@ Experiments, calibration assets, and the safety audit log live in
 ## Using real hardware
 
 ```bash
-.venv/bin/pip install pyadi-iio pylibiio
+sudo apt install libiio-utils libiio-dev   # system libiio (C library + tools)
+.venv/bin/pip install pyadi-iio            # Python bindings
 ```
 
-A reachable Pluto at `ip:192.168.2.1` or `usb:` is auto-discovered at startup
-and appears alongside the simulator with the same adapter contract. Bench
-safety notes: start with the `bench_cabled` frequency profile, keep TX gain at
-the -30 dB default, and use attenuated loopback (REF-01) before any antenna
-work.
+Radios are auto-discovered at startup, and the Dashboard's **Rescan
+hardware** button probes again without a restart — plug in over USB
+(`ip:192.168.2.1` gadget address) or enter the LAN address of a Pluto+ on
+its Ethernet port (e.g. `ip:192.168.1.87`) in the URI field. If the driver
+stack is missing, the rescan status shows the exact install commands.
+
+The Pluto adapter runs **burst-capture only**: each acquisition is a single
+contiguous DMA buffer (max ~8.4 M samples), because no Pluto can stream
+61.44 MSPS continuously over USB or Ethernet. Short reads are reported as
+loss events, never concealed. Tuning limits are read from the device when
+the driver exposes them — a stock Pluto reports 325 MHz–3.8 GHz, a Pluto+
+or AD9364-hacked unit reports 70 MHz–6 GHz — with conservative stock limits
+assumed otherwise.
+
+Bench safety notes: start with the `bench_cabled` frequency profile, keep TX
+gain at the -30 dB default, and run the attenuated loopback experiment
+(REF-01, 30–40 dB inline attenuation TX→RX) before any antenna work.
 
 ## Not yet implemented (per roadmap)
 

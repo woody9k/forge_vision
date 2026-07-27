@@ -38,6 +38,7 @@ document.querySelectorAll("nav button").forEach((b) => {
     if (b.dataset.tab === "library") refreshLibrary();
     if (b.dataset.tab === "safety") refreshSafety();
     if (b.dataset.tab === "dashboard") refreshStatus();
+    if (b.dataset.tab === "antenna") refreshComponents();
   };
 });
 
@@ -126,6 +127,23 @@ $("estop").onclick = async () => {
   alert("EMERGENCY STOP\n" + r.results.join("\n"));
   refreshStatus();
 };
+
+/* ---------- hardware rescan ---------- */
+async function doRescan(uri) {
+  $("rescan-status").textContent = "probing…";
+  try {
+    const r = await api("/api/devices/rescan", { method: "POST", body: { uri } });
+    if (!r.driver.available) { $("rescan-status").textContent = r.driver.detail; return; }
+    const bits = [];
+    if (r.added.length) bits.push("added: " + r.added.map((d) => d.device_id).join(", "));
+    if (r.already_present.length) bits.push("already present: " + r.already_present.join(", "));
+    r.errors.forEach((e) => bits.push(`${e.uri}: ${e.error}`));
+    $("rescan-status").textContent = bits.join(" · ") || "no devices found";
+    refreshStatus();
+  } catch (e) { $("rescan-status").textContent = "rescan failed: " + e.message; }
+}
+$("rescan-btn").onclick = () => doRescan("");
+$("rescan-uri-btn").onclick = () => doRescan($("rescan-uri").value.trim());
 
 /* ---------- Live RF ---------- */
 let waterfallRows = [];
@@ -671,6 +689,144 @@ $("freq-profile").onchange = async () => {
   await api("/api/safety/profile", { method: "POST", body: { profile: $("freq-profile").value } });
   refreshSafety();
 };
+
+/* ---------- Antenna Lab ---------- */
+let selectedComp = null;
+let pinnedComp = null;          // second trace for comparison
+const TRACE_COLORS = ["#35c4a2", "#4aa3ff"];
+
+async function refreshComponents() {
+  const list = await api("/api/components");
+  $("comp-list").innerHTML = list.map((c) => `
+    <div class="expitem ${selectedComp === c.component_id ? "sel" : ""}"
+         onclick="openComponent('${c.component_id}')">
+      <div><b>${esc(c.name)}</b> <span class="tag">${esc(c.kind)}</span>
+        ${c.connector ? `<span class="tag">${esc(c.connector)}</span>` : ""}<br>
+        <span class="mut">${esc(c.claimed_band || "no claimed band")}
+        ${c.has_vna ? " · VNA ✓" : " · no VNA data"}</span></div>
+      <div class="mut">${c.best_match
+        ? "best " + fmtHz(c.best_match.freq_hz) + " @ VSWR " + c.best_match.vswr
+        : ""}</div>
+    </div>`).join("") || '<span class="mut">no components yet — add your antennas and cables</span>';
+}
+
+$("comp-add").onclick = async () => {
+  const name = $("comp-name").value.trim();
+  if (!name) { alert("component needs a name"); return; }
+  await api("/api/components", { method: "POST", body: {
+    kind: $("comp-kind").value, name,
+    connector: $("comp-connector").value.trim(),
+    claimed_band: $("comp-band").value.trim() } });
+  $("comp-name").value = "";
+  refreshComponents();
+};
+
+window.openComponent = async (id) => {
+  selectedComp = id;
+  $("vna-upload").disabled = false;
+  $("comp-delete").disabled = false;
+  const c = await api(`/api/components/${id}`);
+  const meta = { ...c };
+  if (meta.vna) meta.vna = { filename: meta.vna.filename, ports: meta.vna.ports,
+    points: meta.vna.freqs_hz.length, best_match: meta.vna.analysis.best_match };
+  $("comp-detail").textContent = JSON.stringify(meta, null, 1);
+  renderBands(c);
+  drawVnaPlot(c, pinnedComp);
+  refreshComponents();
+};
+
+$("comp-pin").onchange = async () => {
+  if ($("comp-pin").checked && selectedComp) {
+    pinnedComp = await api(`/api/components/${selectedComp}`);
+    $("antenna-meta").textContent = ` — pinned: ${pinnedComp.name}`;
+  } else {
+    pinnedComp = null;
+    $("antenna-meta").textContent = "";
+  }
+};
+
+$("comp-delete").onclick = async () => {
+  if (!selectedComp || !confirm("Delete this component?")) return;
+  await api(`/api/components/${selectedComp}/delete`, { method: "POST" });
+  selectedComp = null;
+  $("comp-detail").textContent = "select a component";
+  $("comp-bands").innerHTML = "";
+  refreshComponents();
+};
+
+$("vna-upload").onclick = async () => {
+  const input = $("vna-file");
+  if (!selectedComp || !input.files.length) { alert("choose a .s1p/.s2p file first"); return; }
+  const fd = new FormData();
+  fd.append("file", input.files[0]);
+  const res = await fetch(`/api/components/${selectedComp}/vna`, { method: "POST", body: fd });
+  if (!res.ok) { alert("import failed: " + (await res.json()).detail); return; }
+  openComponent(selectedComp);
+};
+
+function renderBands(c) {
+  if (!c.vna) { $("comp-bands").innerHTML = ""; return; }
+  const chips = c.vna.analysis.bands.map((b) => {
+    const color = b.rating === "recommended" ? "#12241d;border:1px solid #1f4a38;color:#86dfc0"
+      : b.rating === "marginal" ? "#2b2410;border:1px solid #5c4c1c;color:#e8c96a"
+      : "#1c1116;border:1px solid #3a2028;color:#a06070";
+    return `<span class="tag" style="background:${color}">
+      ${fmtHz(b.start_hz)}–${fmtHz(b.stop_hz)} ${esc(b.rating)} (VSWR≥${b.min_vswr})</span>`;
+  }).join(" ");
+  $("comp-bands").innerHTML = `<p>${chips}</p>`;
+}
+
+function drawVnaPlot(c, pinned) {
+  const cv = $("vna-plot"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#0a0d11"; ctx.fillRect(0, 0, cv.width, cv.height);
+  const traces = [c, pinned].filter((t) => t && t.vna);
+  if (!traces.length) {
+    ctx.fillStyle = "#7d8ba0"; ctx.font = "13px monospace";
+    ctx.fillText("no VNA data imported for this component", 30, 40);
+    return;
+  }
+  const fLo = Math.min(...traces.map((t) => t.vna.freqs_hz[0]));
+  const fHi = Math.max(...traces.map((t) => t.vna.freqs_hz.at(-1)));
+  const mLeft = 52, mRight = 52, mBottom = 26, mTop = 8;
+  const X = (f) => mLeft + ((f - fLo) / (fHi - fLo)) * (cv.width - mLeft - mRight);
+  const s11Lo = -40, s11Hi = 0;
+  const Y1 = (db) => mTop + (1 - (Math.max(db, s11Lo) - s11Lo) / (s11Hi - s11Lo))
+    * (cv.height - mTop - mBottom);
+  const vswrLo = 1, vswrHi = 10;
+  const Y2 = (v) => mTop + (1 - (Math.min(v, vswrHi) - vswrLo) / (vswrHi - vswrLo))
+    * (cv.height - mTop - mBottom);
+
+  ctx.strokeStyle = "#1b2331"; ctx.fillStyle = "#7d8ba0"; ctx.font = "11px monospace";
+  for (let g = 0; g <= 8; g++) {
+    const gx = mLeft + (g / 8) * (cv.width - mLeft - mRight);
+    ctx.beginPath(); ctx.moveTo(gx, mTop); ctx.lineTo(gx, cv.height - mBottom); ctx.stroke();
+    ctx.fillText(fmtHz(fLo + (g / 8) * (fHi - fLo)), gx - 24, cv.height - 8);
+  }
+  for (let db = s11Lo; db <= s11Hi; db += 10) {
+    ctx.fillText(db + " dB", 4, Y1(db) + 4);
+  }
+  for (const v of [1, 2, 3, 5, 10]) {
+    ctx.fillText("VSWR " + v, cv.width - mRight + 3, Y2(v) + 4);
+  }
+  // VSWR=2 guide line (recommended threshold)
+  ctx.strokeStyle = "#2c4a3a"; ctx.setLineDash([2, 4]);
+  ctx.beginPath(); ctx.moveTo(mLeft, Y2(2)); ctx.lineTo(cv.width - mRight, Y2(2)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  traces.forEach((t, ti) => {
+    const { freqs_hz, s11_db, vswr } = t.vna;
+    ctx.strokeStyle = TRACE_COLORS[ti]; ctx.lineWidth = 1.6; ctx.beginPath();
+    freqs_hz.forEach((f, i) =>
+      i ? ctx.lineTo(X(f), Y1(s11_db[i])) : ctx.moveTo(X(f), Y1(s11_db[i])));
+    ctx.stroke();
+    ctx.setLineDash([5, 4]); ctx.lineWidth = 1.1; ctx.beginPath();
+    freqs_hz.forEach((f, i) =>
+      i ? ctx.lineTo(X(f), Y2(vswr[i])) : ctx.moveTo(X(f), Y2(vswr[i])));
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = TRACE_COLORS[ti];
+    ctx.fillText(t.name, mLeft + 8, mTop + 14 + ti * 14);
+  });
+}
 
 /* ---------- boot ---------- */
 refreshStatus();

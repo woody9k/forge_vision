@@ -22,6 +22,7 @@ from ..dsp import stages as _stages  # noqa: F401  (registers stages)
 from ..dsp.pipeline import Pipeline, PipelineContext
 from ..experiments.store import ExperimentStore
 from ..imaging.bscan import BScanBuilder
+from ..rfcomponents.store import ComponentStore
 from ..safety import SafetyController
 from ..waveforms import CATALOG
 
@@ -46,6 +47,7 @@ class Runtime:
         self.data_dir = data_dir or DEFAULT_DATA_DIR
         os.makedirs(self.data_dir, exist_ok=True)
         self.store = ExperimentStore(os.path.join(self.data_dir, "experiments"))
+        self.components = ComponentStore(os.path.join(self.data_dir, "components"))
         self.safety = SafetyController(
             SafetyLimits(), os.path.join(self.data_dir, "logs", "safety_audit.jsonl"))
         self.devices: dict[str, object] = {}
@@ -72,6 +74,31 @@ class Runtime:
                 self._register(dev)
         except Exception:  # noqa: BLE001 - hardware discovery is best-effort
             pass
+
+    def rescan_hardware(self, uri: str = "") -> dict:
+        """Probe for radios without restarting (default URIs, or one explicit
+        URI such as ip:192.168.1.87 for a Pluto+ on its Ethernet port)."""
+        from ..devices.pluto import DEFAULT_URIS, PlutoDevice, driver_status
+        status = driver_status()
+        result = {"driver": status, "added": [], "already_present": [],
+                  "errors": []}
+        if not status["available"]:
+            return result
+        uris = [uri] if uri else list(DEFAULT_URIS)
+        for u in uris:
+            device_id = f"pluto-{u}"
+            if device_id in self.devices:
+                result["already_present"].append(device_id)
+                continue
+            try:
+                dev = PlutoDevice(u)
+                dev.connect()
+                self._register(dev)
+                self.safety.audit("device_discovered", device=device_id, uri=u)
+                result["added"].append(dev.describe())
+            except Exception as exc:  # noqa: BLE001 - report, don't crash
+                result["errors"].append({"uri": u, "error": str(exc)})
+        return result
 
     def device(self, device_id: str):
         if device_id not in self.devices:

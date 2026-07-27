@@ -38,6 +38,12 @@ def status():
 
 
 # -- devices -----------------------------------------------------------------
+@app.post("/api/devices/rescan")
+def rescan(body: dict = Body(default={})):
+    """Probe for hardware without restarting; optional explicit URI."""
+    return runtime.rescan_hardware(body.get("uri", ""))
+
+
 @app.post("/api/devices/{device_id}/connect")
 def connect(device_id: str):
     try:
@@ -282,6 +288,63 @@ async def import_package(file: UploadFile):
         manifest = runtime.store.import_package(path)
         os.unlink(path)
         return manifest
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+# -- RF components / Antenna Lab (FR-RFC-*) -----------------------------------
+@app.get("/api/components")
+def components(kind: str = ""):
+    return runtime.components.list(kind=kind)
+
+
+@app.post("/api/components")
+def create_component(body: dict = Body(...)):
+    try:
+        return runtime.components.create(
+            kind=body.get("kind", "antenna"), name=body.get("name", ""),
+            connector=body.get("connector", ""),
+            claimed_band=body.get("claimed_band", ""),
+            polarization=body.get("polarization", ""),
+            notes=body.get("notes", ""),
+            nominal_loss_db=body.get("nominal_loss_db"),
+            nominal_delay_ns=body.get("nominal_delay_ns"))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/components/{comp_id}")
+def component(comp_id: str):
+    try:
+        return runtime.components.load(comp_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/components/{comp_id}/update")
+def update_component(comp_id: str, body: dict = Body(...)):
+    try:
+        return runtime.components.update(comp_id, body)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/components/{comp_id}/delete")
+def delete_component(comp_id: str):
+    try:
+        runtime.components.delete(comp_id)
+        return {"deleted": comp_id}
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/components/{comp_id}/vna")
+async def import_vna(comp_id: str, file: UploadFile):
+    """Import a NanoVNA touchstone (.s1p/.s2p) measurement (FR-RFC-003)."""
+    try:
+        text = (await file.read()).decode("utf-8", errors="replace")
+        return runtime.components.import_vna(comp_id, text,
+                                             filename=file.filename or "")
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
