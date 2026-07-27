@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forge Vision</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">FORGE <span>VISION</span><small>v0.3 · RF Bench / Range Lab / Scan Studio</small></div>
+  <nav id="tabs">
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="live">Live RF</button>
+    <button data-tab="range">Range Lab</button>
+    <button data-tab="scan">Scan Studio</button>
+    <button data-tab="library">Experiments</button>
+    <button data-tab="safety">Safety</button>
+  </nav>
+  <div class="txbox">
+    <div id="tx-indicator" class="tx-off">TX OFF</div>
+    <button id="estop" title="Immediately disable all transmission (FR-SAF-003)">■ STOP</button>
+  </div>
+</header>
+
+<main>
+  <!-- ============ DASHBOARD ============ -->
+  <section id="tab-dashboard" class="tab active">
+    <div class="grid2">
+      <div class="panel">
+        <h2>Devices</h2>
+        <div id="device-list"></div>
+      </div>
+      <div class="panel">
+        <h2>System</h2>
+        <div id="system-info"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Recent experiments</h2>
+      <div id="recent-experiments"></div>
+    </div>
+  </section>
+
+  <!-- ============ LIVE RF ============ -->
+  <section id="tab-live" class="tab">
+    <div class="toolbar">
+      <label>Device <select id="live-device"></select></label>
+      <button id="live-connect">Connect</button>
+      <button id="live-stream" disabled>Start stream</button>
+      <label>Waveform <select id="live-waveform"></select></label>
+      <button id="live-tx" disabled>Enable TX</button>
+      <button id="live-record" disabled>Record raw capture</button>
+      <span id="live-status" class="mut"></span>
+    </div>
+    <div class="toolbar" id="live-config">
+      <label>Center (MHz) <input id="cfg-freq" type="number" value="915" step="1"></label>
+      <label>Rate (MSPS) <input id="cfg-rate" type="number" value="61.44" step="0.01"></label>
+      <label>RX BW (MHz) <input id="cfg-bw" type="number" value="56" step="1"></label>
+      <label>RX gain (dB) <input id="cfg-rxgain" type="number" value="40" step="1"></label>
+      <label>TX gain (dB) <input id="cfg-txgain" type="number" value="-30" step="1"></label>
+      <button id="cfg-apply">Apply config</button>
+    </div>
+    <div id="live-alerts"></div>
+    <div class="grid2">
+      <div class="panel"><h2>Spectrum</h2><canvas id="spectrum" width="640" height="220"></canvas></div>
+      <div class="panel"><h2>Time domain (I/Q)</h2><canvas id="timedom" width="640" height="220"></canvas></div>
+    </div>
+    <div class="panel"><h2>Waterfall</h2><canvas id="waterfall" width="1280" height="260"></canvas></div>
+    <div class="panel"><h2>Telemetry &amp; quality</h2><pre id="live-quality" class="mono"></pre></div>
+  </section>
+
+  <!-- ============ RANGE LAB ============ -->
+  <section id="tab-range" class="tab">
+    <div class="toolbar">
+      <label>Device <select id="range-device"></select></label>
+      <label>Waveform <select id="range-waveform"></select></label>
+      <label>Medium <select id="range-medium"></select></label>
+      <label>Chirps <input id="range-chirps" type="number" value="8" min="1" max="64"></label>
+      <label><input type="checkbox" id="range-usebg" checked> subtract background</label>
+      <button id="range-bg">Capture background</button>
+      <button id="range-run" class="primary">Run ranging</button>
+      <span id="range-status" class="mut"></span>
+    </div>
+    <div id="range-cal" class="calbanner"></div>
+    <div class="panel">
+      <h2>Range profile <span class="mut" id="range-meta"></span></h2>
+      <canvas id="range-plot" width="1280" height="300"></canvas>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h2>Detected targets</h2>
+        <table id="peak-table">
+          <thead><tr><th>Range</th><th>Interval (model+res)</th><th>Delay (measured)</th>
+          <th>Power</th><th>SNR</th><th>Width</th><th>Confidence</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="mut">Measured delay is the observation; range is derived through the
+        selected propagation model. Intervals include range resolution and
+        permittivity uncertainty.</p>
+      </div>
+      <div class="panel">
+        <h2>Simulated scene (bench)</h2>
+        <div id="scene-editor">
+          <p class="mut">Targets in front of the virtual radar:</p>
+          <div id="scene-targets"></div>
+          <button id="scene-add">+ add plate</button>
+          <button id="scene-apply">Apply scene</button>
+        </div>
+        <h2 style="margin-top:14px">Quality</h2>
+        <pre id="range-quality" class="mono"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCAN STUDIO ============ -->
+  <section id="tab-scan" class="tab">
+    <div class="toolbar">
+      <label>Device <select id="scan-device"></select></label>
+      <label>Start (m) <input id="scan-start" type="number" value="0" step="0.1"></label>
+      <label>End (m) <input id="scan-end" type="number" value="3.2" step="0.1"></label>
+      <label>Step (m) <input id="scan-step" type="number" value="0.1" step="0.05"></label>
+      <label>Medium <select id="scan-medium"></select></label>
+      <label>Waveform <select id="scan-waveform"></select></label>
+      <button id="scan-scene">Load buried-target scene</button>
+      <button id="scan-begin" class="primary">Start scan</button>
+      <span id="scan-status" class="mut"></span>
+    </div>
+    <div class="toolbar">
+      <button id="scan-next" disabled>Capture next point</button>
+      <button id="scan-auto" disabled>Auto-run remaining</button>
+      <button id="scan-finalize" disabled>Finalize scan</button>
+      <label><input type="checkbox" id="scan-interp"> interpolate missing (marked inferred)</label>
+      <label><input type="checkbox" id="scan-clutter"> remove mean trace (clutter)</label>
+      <label><input type="checkbox" id="scan-qual"> quality overlay</label>
+      <label>Resume scan id <input id="scan-resume-id" type="text" size="24">
+        <button id="scan-resume">Resume</button></label>
+    </div>
+    <div class="panel">
+      <h2>B-scan — position vs. range/depth <span class="mut" id="scan-meta"></span></h2>
+      <canvas id="bscan" width="1280" height="420"></canvas>
+      <div id="scan-progress" class="mut"></div>
+    </div>
+    <div class="panel">
+      <h2>Annotations</h2>
+      <div class="toolbar">
+        <input id="ann-text" type="text" size="50" placeholder="note about a region or point…">
+        <label>x (m) <input id="ann-x" type="number" step="0.1" style="width:70px"></label>
+        <label>depth (m) <input id="ann-d" type="number" step="0.1" style="width:70px"></label>
+        <button id="ann-add">Add annotation</button>
+      </div>
+      <div id="ann-list"></div>
+    </div>
+  </section>
+
+  <!-- ============ EXPERIMENT LIBRARY ============ -->
+  <section id="tab-library" class="tab">
+    <div class="toolbar">
+      <input id="lib-query" type="text" size="30" placeholder="search text…">
+      <select id="lib-kind">
+        <option value="">all kinds</option>
+        <option value="range">range</option>
+        <option value="scan">scan</option>
+        <option value="capture">capture</option>
+        <option value="calibration">calibration</option>
+      </select>
+      <button id="lib-refresh">Search</button>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h2>Experiments</h2><div id="lib-list"></div></div>
+      <div class="panel"><h2>Details</h2>
+        <div class="toolbar">
+          <button id="lib-replay" disabled>Replay (reprocess raw)</button>
+          <button id="lib-verify" disabled>Verify integrity</button>
+          <a id="lib-export" class="btnlike disabled" href="#" download>Export .zip</a>
+        </div>
+        <pre id="lib-detail" class="mono">select an experiment</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SAFETY ============ -->
+  <section id="tab-safety" class="tab">
+    <div class="grid2">
+      <div class="panel">
+        <h2>Transmit interlock</h2>
+        <p class="mut">Transmission requires an explicit per-session arm action
+        (FR-SAF-001). Everything is logged (FR-SAF-010).</p>
+        <label>Operator <input id="arm-operator" type="text" placeholder="your name"></label><br><br>
+        <label><input type="checkbox" id="arm-ack"> I confirm antennas/loads are safe,
+        power limits reviewed, and transmission is authorized in this environment.</label><br><br>
+        <button id="arm-btn" class="primary">Arm TX for this session</button>
+        <button id="disarm-btn">Disarm</button>
+        <pre id="safety-state" class="mono"></pre>
+      </div>
+      <div class="panel">
+        <h2>Limits &amp; frequency profile</h2>
+        <div id="limits-view" class="mono"></div>
+        <label>Active profile <select id="freq-profile"></select></label>
+        <h2 style="margin-top:14px">Audit log</h2>
+        <pre id="audit-log" class="mono tall"></pre>
+      </div>
+    </div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
