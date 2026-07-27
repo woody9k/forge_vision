@@ -160,6 +160,41 @@ class DeviceAdapter(abc.ABC):
             raise ConfigurationError("; ".join(problems))
         self.config = cfg
 
+    def clamp_config(self, cfg: DeviceConfig) -> tuple[DeviceConfig, list[str]]:
+        """Fit a config inside this device's capabilities, reporting changes.
+
+        Defaults are written for a wideband Pluto+; a narrower device (a stock
+        AD9363 Pluto tops out at 20 MHz RF bandwidth) must not have out-of-range
+        values pushed at its driver on connect.
+        """
+        caps = self.capabilities
+        notes: list[str] = []
+
+        def fit(value, lo, hi, label, unit="Hz", scale=1e6, suffix="MHz"):
+            new = min(max(value, lo), hi)
+            if new != value:
+                notes.append(f"{label} {value / scale:.4g} {suffix} -> "
+                             f"{new / scale:.4g} {suffix} (device limit)")
+            return new
+
+        cfg.center_frequency_hz = fit(cfg.center_frequency_hz, caps.min_frequency,
+                                      caps.max_frequency, "center frequency")
+        cfg.sample_rate_hz = fit(cfg.sample_rate_hz, caps.min_sample_rate,
+                                 caps.max_sample_rate, "sample rate",
+                                 suffix="MSPS")
+        cfg.rx_bandwidth_hz = fit(cfg.rx_bandwidth_hz, 0,
+                                  min(caps.max_bandwidth, cfg.sample_rate_hz),
+                                  "rx bandwidth")
+        cfg.rx_gain_db = min(max(cfg.rx_gain_db, 0.0), caps.max_rx_gain_db)
+        cfg.tx_gain_db = min(max(cfg.tx_gain_db, caps.min_tx_gain_db),
+                             caps.max_tx_gain_db)
+        return cfg, notes
+
+    def compatible_waveforms(self, catalog: dict) -> list[str]:
+        """Names of catalog waveforms this device can actually transmit."""
+        return [name for name, wf in catalog.items()
+                if not wf.validate(self.capabilities)]
+
     # -- transmit ----------------------------------------------------------
     def load_waveform(self, waveform) -> None:
         self._tx_waveform = waveform

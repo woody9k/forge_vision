@@ -71,7 +71,11 @@ function renderDashboard() {
         <b>${esc(d.device_id)}</b> <span class="mut">${esc(d.kind)}</span><br>
         <span class="mut">${fmtHz(d.config.center_frequency_hz)} ·
         ${(d.config.sample_rate_hz / 1e6).toFixed(2)} MSPS ·
-        RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB</span></div>
+        RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB<br>
+        tuning ${fmtHz(d.capabilities.min_frequency)}–${fmtHz(d.capabilities.max_frequency)} ·
+        max BW ${(d.capabilities.max_bandwidth / 1e6).toFixed(0)} MHz ·
+        waveforms: ${(d.compatible_waveforms || []).map(esc).join(", ") || "none"}
+        ${(d.capability_notes || []).map((n) => "<br>" + esc(n)).join("")}</span></div>
       <div>${d.tx_enabled ? '<span class="tag" style="background:#57120a;color:#ffb4a4">TX</span>' : ""}
         ${d.connected
           ? `<button onclick="devDisconnect('${d.device_id}')">Disconnect</button>`
@@ -98,12 +102,18 @@ function fillSelectors() {
     sel.innerHTML = devs.map((d) => `<option>${esc(d)}</option>`).join("");
     if (devs.includes(cur)) sel.value = cur;
   }
-  const wfs = Object.keys(STATUS.waveforms);
-  for (const id of ["live-waveform", "range-waveform", "scan-waveform"]) {
-    const sel = $(id);
+  // waveform lists are per-device: a stock AD9363 Pluto (20 MHz) cannot
+  // transmit the 56 MHz sweeps, so never offer them for that radio
+  for (const [wfId, devId] of [["live-waveform", "live-device"],
+                               ["range-waveform", "range-device"],
+                               ["scan-waveform", "scan-device"]]) {
+    const dev = STATUS.devices.find((d) => d.device_id === $(devId).value);
+    const wfs = (dev && dev.compatible_waveforms) || Object.keys(STATUS.waveforms);
+    const sel = $(wfId);
     const cur = sel.value;
     sel.innerHTML = wfs.map((w) => `<option>${esc(w)}</option>`).join("");
-    sel.value = wfs.includes(cur) ? cur : "fmcw_bench_56M";
+    sel.value = wfs.includes(cur) ? cur
+      : (wfs.includes("fmcw_bench_56M") ? "fmcw_bench_56M" : wfs[0] || "");
   }
   const media = Object.keys(STATUS.media_presets);
   for (const id of ["range-medium", "scan-medium"]) {
@@ -118,6 +128,9 @@ function fillSelectors() {
   prof.innerHTML = profiles.map((p) => `<option>${esc(p)}</option>`).join("");
   prof.value = STATUS.safety.limits.active_profile;
 }
+
+["live-device", "range-device", "scan-device"].forEach((id) =>
+  $(id).addEventListener("change", () => { if (STATUS) fillSelectors(); }));
 
 window.devConnect = async (id) => { await api(`/api/devices/${id}/connect`, { method: "POST" }); refreshStatus(); };
 window.devDisconnect = async (id) => { await api(`/api/devices/${id}/disconnect`, { method: "POST" }); refreshStatus(); };

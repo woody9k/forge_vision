@@ -23,7 +23,11 @@ def detect_peaks_from_profile(profile: dict, ctx, threshold_db: float = 10.0,
     if len(mag) < 3:
         return []
 
-    noise_floor = float(np.median(mag))
+    # 25th percentile, not the median: a narrowband sweep has few range bins
+    # (a 20 MHz sweep gives ~46 bins over 40 m) and a strong wide return such
+    # as TX leakage can occupy enough of them to drag the median up above the
+    # returns themselves, suppressing every detection.
+    noise_floor = float(np.percentile(mag, 25))
     threshold = noise_floor + threshold_db
     resolution = profile.get("resolution_m", 0.0)
     min_sep = max(min_separation_m, resolution * 0.75)

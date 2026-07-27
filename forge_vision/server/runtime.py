@@ -109,20 +109,20 @@ class Runtime:
         dev = self.device(device_id)
         dev.connect()
         self.safety.audit("device_connected", device=device_id)
-        return dev.describe()
+        return self._describe_device(dev)
 
     def disconnect(self, device_id: str) -> dict:
         dev = self.device(device_id)
         dev.disconnect()   # fault-safe TX off inside adapter
         self.safety.notify_tx_stopped(device_id, reason="disconnect")
         self.safety.audit("device_disconnected", device=device_id)
-        return dev.describe()
+        return self._describe_device(dev)
 
     def configure(self, device_id: str, cfg: dict) -> dict:
         dev = self.device(device_id)
         merged = {**dev.config.to_dict(), **cfg}
         dev.configure(DeviceConfig(**merged))
-        return dev.describe()
+        return self._describe_device(dev)
 
     # -- safety ------------------------------------------------------------
     def emergency_stop(self) -> dict:
@@ -144,14 +144,25 @@ class Runtime:
     def set_tx(self, device_id: str, enable: bool, waveform_name: str = "") -> dict:
         dev = self.device(device_id)
         if enable:
-            wf = CATALOG[waveform_name]
-            problems = wf.validate(dev.capabilities)
-            if problems:
-                raise ValueError("; ".join(problems))
-            self._enable_tx(dev, wf, dev.config.tx_gain_db)
+            self._check_waveform(dev, waveform_name)
+            self._enable_tx(dev, CATALOG[waveform_name], dev.config.tx_gain_db)
         else:
             self._disable_tx(dev)
-        return dev.describe()
+        return self._describe_device(dev)
+
+    def _check_waveform(self, dev, waveform_name: str):
+        """Reject an incompatible waveform with an actionable message."""
+        if waveform_name not in CATALOG:
+            raise KeyError(f"unknown waveform: {waveform_name}")
+        wf = CATALOG[waveform_name]
+        problems = wf.validate(dev.capabilities)
+        if problems:
+            usable = dev.compatible_waveforms(CATALOG)
+            raise ValueError(
+                f"waveform '{waveform_name}' is not supported by "
+                f"{dev.device_id} ({'; '.join(problems)}). "
+                f"Compatible waveforms: {', '.join(usable) or 'none'}")
+        return wf
 
     # -- calibration -------------------------------------------------------
     def set_cable_delay(self, device_id: str, delay_s: float) -> dict:
@@ -233,7 +244,7 @@ class Runtime:
                            chirps: int = 8, operator: str = "") -> dict:
         """Capture the static-scene baseline (FR-CAL-004)."""
         dev = self.device(device_id)
-        wf = CATALOG[waveform_name]
+        wf = self._check_waveform(dev, waveform_name)
         seg = self._ranging_capture(dev, wf, chirps)
         result = self._process_range(seg, Medium(),
                                      self.calibration[device_id]["cable_delay_s"], None)
@@ -268,7 +279,7 @@ class Runtime:
                   parent_id: str | None = None) -> dict:
         """One complete Range Lab run: capture -> package -> process -> report."""
         dev = self.device(device_id)
-        wf = CATALOG[waveform_name]
+        wf = self._check_waveform(dev, waveform_name)
         med = self._medium_from(medium)
         cal = self.calibration[device_id]
         background = None
@@ -413,7 +424,7 @@ class Runtime:
         if builder.index_of(x_m) is None:
             raise ValueError(f"position {x_m} m is outside the scan plan")
 
-        wf = CATALOG[plan["waveform"]]
+        wf = self._check_waveform(dev, plan["waveform"])
         med = self._medium_from(plan["medium"])
         cal = self.calibration[dev.device_id]
         position = {"x_m": x_m,
@@ -568,10 +579,25 @@ class Runtime:
         return scene.to_dict()
 
     # -- dashboard -----------------------------------------------------------
+    def _describe_device(self, dev) -> dict:
+        d = dev.describe()
+        # the UI must never offer a waveform this radio cannot transmit
+        d["compatible_waveforms"] = dev.compatible_waveforms(CATALOG)
+        return d
+
+    def set_caps_profile(self, device_id: str, profile: str) -> dict:
+        dev = self.device(device_id)
+        if not hasattr(dev, "set_caps_profile"):
+            raise ValueError("capability profiles only apply to simulated devices")
+        notes = dev.set_caps_profile(profile)
+        self.safety.audit("sim_caps_profile_changed", device=device_id,
+                          profile=profile, clamped=notes)
+        return {**self._describe_device(dev), "clamp_notes": notes}
+
     def status(self) -> dict:
         return {
             "version": __import__("forge_vision").__version__,
-            "devices": [d.describe() for d in self.devices.values()],
+            "devices": [self._describe_device(d) for d in self.devices.values()],
             "safety": self.safety.status(),
             "storage": self.store.storage_stats(),
             "recent_experiments": self.store.list()[:8],

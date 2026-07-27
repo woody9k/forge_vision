@@ -152,6 +152,10 @@ class PlutoDevice(DeviceAdapter):
     def connect(self) -> None:
         self._sdr = adi.Pluto(uri=self.uri)
         self._detect_capabilities()
+        # platform defaults target a wideband Pluto+; fit them to whatever this
+        # device actually is before pushing values at the driver
+        self.config, clamp_notes = self.clamp_config(self.config)
+        self._detection_notes.extend(clamp_notes)
         self._apply()
         self._sdr.tx_destroy_buffer()   # never inherit a stale TX buffer
         self.connected = True

@@ -350,6 +350,15 @@ async def import_vna(comp_id: str, file: UploadFile):
 
 
 # -- simulator ---------------------------------------------------------------
+@app.post("/api/sim/{device_id}/caps")
+def sim_caps(device_id: str, body: dict = Body(...)):
+    """Emulate a specific hardware class (pluto_plus | pluto_rev_b)."""
+    try:
+        return runtime.set_caps_profile(device_id, body.get("profile", ""))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 @app.post("/api/sim/{device_id}/scene")
 def sim_scene(device_id: str, body: dict = Body(default={})):
     try:

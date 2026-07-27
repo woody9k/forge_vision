@@ -72,6 +72,14 @@ class Waveform:
     def validate(self, capabilities) -> list[str]:
         """Return a list of violations against device capabilities (FR-WAV-004)."""
         problems = []
+        if self.kind == "rx_only":
+            # a receive-only waveform never transmits, so amplitude/bandwidth
+            # limits do not apply to it
+            if self.sample_rate > capabilities.max_sample_rate:
+                problems.append(
+                    f"sample rate {self.sample_rate:.3g} exceeds device max "
+                    f"{capabilities.max_sample_rate:.3g}")
+            return problems
         if self.sample_rate > capabilities.max_sample_rate:
             problems.append(
                 f"sample rate {self.sample_rate:.3g} exceeds device max "

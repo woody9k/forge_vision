@@ -114,12 +114,30 @@ PLUTO_PLUS_CAPS = DeviceCapabilities(
     transports=("usb", "ethernet"),
 )
 
+# stock ADI PlutoSDR Rev.B/C (AD9363): narrower tuning and RF bandwidth
+PLUTO_REV_B_CAPS = DeviceCapabilities(
+    min_frequency=325e6, max_frequency=3.8e9,
+    min_sample_rate=0.65e6, max_sample_rate=61.44e6,
+    max_bandwidth=20e6, rx_channels=1, tx_channels=1,
+    max_rx_gain_db=71.0, min_tx_gain_db=-89.75, max_tx_gain_db=0.0,
+    transports=("usb",),
+)
+
+CAPS_PROFILES = {
+    "pluto_plus": PLUTO_PLUS_CAPS,
+    "pluto_rev_b": PLUTO_REV_B_CAPS,
+}
+
 
 class SimulatedPluto(DeviceAdapter):
     """Virtual Pluto+ with a configurable physical scene."""
 
-    def __init__(self, device_id: str = "sim-pluto-0", scene: SimScene | None = None):
+    def __init__(self, device_id: str = "sim-pluto-0", scene: SimScene | None = None,
+                 caps_profile: str = "pluto_plus"):
         super().__init__(device_id)
+        # lets you rehearse against the hardware you actually own: set
+        # "pluto_rev_b" to get stock AD9363 limits (325 MHz-3.8 GHz, 20 MHz)
+        self.caps_profile = caps_profile
         self.scene = scene or default_bench_scene()
         self.antenna_x_m = 0.0            # scan-axis position of the antenna pair
         self._t0 = time.time()
@@ -129,11 +147,20 @@ class SimulatedPluto(DeviceAdapter):
 
     @property
     def capabilities(self) -> DeviceCapabilities:
-        return PLUTO_PLUS_CAPS
+        return CAPS_PROFILES.get(self.caps_profile, PLUTO_PLUS_CAPS)
 
     @property
     def kind(self) -> str:
-        return "simulated_pluto_plus"
+        return f"simulated_{self.caps_profile}"
+
+    def set_caps_profile(self, profile: str) -> list[str]:
+        """Switch the emulated hardware class; returns config clamp notes."""
+        if profile not in CAPS_PROFILES:
+            raise ValueError(f"unknown profile {profile}; "
+                             f"expected one of {sorted(CAPS_PROFILES)}")
+        self.caps_profile = profile
+        self.config, notes = self.clamp_config(self.config)
+        return notes
 
     def set_scene(self, scene: SimScene) -> None:
         # the noise stream deliberately continues across scene changes so
