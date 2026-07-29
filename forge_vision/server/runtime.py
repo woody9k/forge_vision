@@ -27,6 +27,32 @@ from ..safety import SafetyController
 from ..waveforms import CATALOG
 
 
+def _survey_point(freq_hz: float, seg) -> dict:
+    """Occupancy statistics for one tuning step of a band survey."""
+    iq = seg.iq
+    n = 4096
+    usable = (len(iq) // n) * n
+    if usable == 0:
+        return {"center_hz": freq_hz, "noise_floor_dbfs": None,
+                "peak_dbfs": None, "occupancy": None, "clipped": seg.clipped}
+    segs = iq[:usable].reshape(-1, n) * np.hanning(n)
+    psd = 10 * np.log10(
+        np.mean(np.abs(np.fft.fft(segs, axis=1)) ** 2, axis=0) / n ** 2 + 1e-20)
+    floor = float(np.median(psd))
+    peak = float(np.max(psd))
+    # fraction of bins more than 10 dB above the floor = how busy the channel is
+    occupancy = float(np.mean(psd > floor + 10.0))
+    return {
+        "center_hz": freq_hz,
+        "noise_floor_dbfs": round(floor, 1),
+        "peak_dbfs": round(peak, 1),
+        "peak_above_floor_db": round(peak - floor, 1),
+        "occupancy": round(occupancy, 4),
+        "clipped": bool(seg.clipped),
+        "loss_events": len(seg.loss_events),
+    }
+
+
 RANGE_PIPELINE = [
     ("dc_remove", {}),
     ("range_profile_fmcw", {"zero_pad_factor": 8, "max_range_m": 40.0}),
@@ -550,6 +576,81 @@ class Runtime:
         self.store.finalize(exp_id)
         return {"experiment_id": exp_id, "segments": entries,
                 "bytes_estimate": bytes_needed}
+
+    # -- band survey (receive only) ------------------------------------------
+    def band_survey(self, device_id: str, start_hz: float, stop_hz: float,
+                    step_hz: float = 2e6, sample_rate_hz: float = 2.5e6,
+                    rx_gain_db: float = 40.0, samples: int = 65536,
+                    name: str = "band survey", operator: str = "") -> dict:
+        """Sweep a frequency range with the receiver only and report occupancy.
+
+        Transmits nothing, so it is safe before any TX bring-up, and answers
+        the practical question "where is it quiet enough to transmit?".
+        Results are stored as a normal experiment package.
+        """
+        dev = self.device(device_id)
+        if not dev.connected:
+            raise ValueError(f"{device_id} is not connected")
+        caps = dev.capabilities
+        start_hz = max(float(start_hz), caps.min_frequency)
+        stop_hz = min(float(stop_hz), caps.max_frequency)
+        if stop_hz <= start_hz:
+            raise ValueError("stop frequency must be above start frequency, "
+                             f"and both inside {caps.min_frequency:.4g}-"
+                             f"{caps.max_frequency:.4g} Hz")
+        step_hz = max(float(step_hz), 0.1e6)
+        steps = int((stop_hz - start_hz) / step_hz) + 1
+        if steps > 400:
+            raise ValueError(f"{steps} steps requested; widen the step size "
+                             "(limit 400 per survey)")
+
+        original = DeviceConfig(**dev.config.to_dict())
+        manifest = self.store.create(
+            name=name, kind="survey", operator=operator,
+            objective=f"receive-only occupancy survey {start_hz / 1e6:.1f}-"
+                      f"{stop_hz / 1e6:.1f} MHz",
+            hardware={"device_id": device_id, "kind": dev.kind},
+            rf_config={"sample_rate_hz": sample_rate_hz,
+                       "rx_gain_db": rx_gain_db, "step_hz": step_hz})
+        exp_id = manifest["identity"]["experiment_id"]
+
+        points = []
+        try:
+            with self.device_locks[device_id]:
+                for i in range(steps):
+                    freq = start_hz + i * step_hz
+                    cfg = DeviceConfig(**{**dev.config.to_dict(),
+                                          "center_frequency_hz": freq,
+                                          "sample_rate_hz": sample_rate_hz,
+                                          "rx_bandwidth_hz": min(
+                                              sample_rate_hz, caps.max_bandwidth),
+                                          "rx_gain_db": rx_gain_db})
+                    dev.configure(cfg)
+                    seg = dev.receive(samples)
+                    points.append(_survey_point(freq, seg))
+        finally:
+            dev.configure(original)     # always restore the operator's config
+
+        floors = [p["noise_floor_dbfs"] for p in points]
+        quietest = min(points, key=lambda p: p["peak_dbfs"])
+        busiest = max(points, key=lambda p: p["peak_dbfs"])
+        product = {
+            "start_hz": start_hz, "stop_hz": stop_hz, "step_hz": step_hz,
+            "sample_rate_hz": sample_rate_hz, "rx_gain_db": rx_gain_db,
+            "points": points,
+            "median_noise_floor_dbfs": round(float(np.median(floors)), 1),
+            "quietest": quietest, "busiest": busiest,
+        }
+        self.store.add_derived(
+            exp_id, "band_survey", product,
+            {"stages": [{"stage": "band_survey", "version": "1.0",
+                         "params": {"step_hz": step_hz, "samples": samples,
+                                    "rx_gain_db": rx_gain_db}}],
+             "fingerprint": "band_survey-1.0"}, [])
+        self.store.finalize(exp_id)
+        self.safety.audit("band_survey", device=device_id, start_hz=start_hz,
+                          stop_hz=stop_hz, steps=steps, experiment=exp_id)
+        return {"experiment_id": exp_id, **product}
 
     # -- simulator control ---------------------------------------------------
     def set_sim_scene(self, device_id: str, preset: str = "",

@@ -20,6 +20,36 @@ class SafetyViolation(Exception):
     pass
 
 
+# Pre-transmit operator checklist (FR-SAF-009). These are the questions a
+# bench operator should be forced to answer before any RF leaves the board.
+# `required` items block arming; advisory items are recorded but do not gate.
+DEFAULT_CHECKLIST = [
+    {"id": "tx_port_loaded",
+     "text": "The TX port is terminated, attenuated, or connected to a known "
+             "load — not left open with a cable attached that could act as a "
+             "radiator.",
+     "required": True},
+    {"id": "rx_protected",
+     "text": "If TX is cabled to RX, at least 30 dB of attenuation is in the "
+             "path. A direct TX->RX connection can damage the receiver.",
+     "required": True},
+    {"id": "frequency_authorised",
+     "text": "The chosen frequency is one I am permitted to transmit on in "
+             "this environment (see the active frequency profile).",
+     "required": True},
+    {"id": "power_reviewed",
+     "text": "Transmit gain and amplitude limits have been reviewed for this "
+             "session.",
+     "required": True},
+    {"id": "people_clear",
+     "text": "No one is close to a radiating antenna.",
+     "required": False},
+    {"id": "connectors_checked",
+     "text": "Connectors and adapters are seated and undamaged.",
+     "required": False},
+]
+
+
 @dataclass
 class SafetyState:
     armed: bool = False                 # session interlock (FR-SAF-001)
@@ -39,6 +69,29 @@ class SafetyController:
         self._lock = threading.RLock()
         self._audit_path = audit_path
         os.makedirs(os.path.dirname(audit_path), exist_ok=True)
+        self.checklist = [dict(item, confirmed=False)
+                          for item in DEFAULT_CHECKLIST]
+
+    # -- pre-transmit checklist (FR-SAF-009) --------------------------------
+    def checklist_status(self) -> dict:
+        outstanding = [i["id"] for i in self.checklist
+                       if i["required"] and not i["confirmed"]]
+        return {"items": self.checklist, "outstanding": outstanding,
+                "complete": not outstanding}
+
+    def confirm_checklist_item(self, item_id: str, confirmed: bool = True) -> dict:
+        for item in self.checklist:
+            if item["id"] == item_id:
+                item["confirmed"] = bool(confirmed)
+                self.audit("checklist_item", item=item_id, confirmed=confirmed)
+                return self.checklist_status()
+        raise KeyError(f"unknown checklist item: {item_id}")
+
+    def reset_checklist(self) -> dict:
+        for item in self.checklist:
+            item["confirmed"] = False
+        self.audit("checklist_reset")
+        return self.checklist_status()
 
     # -- audit -------------------------------------------------------------
     def audit(self, event: str, **detail) -> None:
@@ -57,9 +110,19 @@ class SafetyController:
 
     # -- interlock ---------------------------------------------------------
     def arm(self, operator: str, acknowledgement: str) -> None:
-        """Explicit per-session operator action required before any TX (FR-SAF-001)."""
+        """Explicit per-session operator action required before any TX (FR-SAF-001).
+
+        The required pre-transmit checks must be confirmed first (FR-SAF-009).
+        """
         if not operator or not acknowledgement:
             raise SafetyViolation("arming requires operator name and acknowledgement text")
+        status = self.checklist_status()
+        if not status["complete"]:
+            texts = [i["text"] for i in self.checklist
+                     if i["id"] in status["outstanding"]]
+            raise SafetyViolation(
+                "pre-transmit checklist incomplete; confirm: "
+                + " | ".join(texts))
         with self._lock:
             self.state.armed = True
             self.state.armed_by = operator
@@ -131,4 +194,5 @@ class SafetyController:
                 "tx_active": self.state.tx_active,
                 "tx_active_devices": sorted(self.state.tx_active_devices),
                 "limits": self.limits.to_dict(),
+                "checklist": self.checklist_status(),
             }

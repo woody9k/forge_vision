@@ -99,6 +99,40 @@ def emergency_stop():
     return runtime.emergency_stop()
 
 
+@app.get("/api/safety/checklist")
+def checklist():
+    return runtime.safety.checklist_status()
+
+
+@app.post("/api/safety/checklist")
+def confirm_checklist(body: dict = Body(...)):
+    try:
+        if body.get("reset"):
+            return runtime.safety.reset_checklist()
+        return runtime.safety.confirm_checklist_item(
+            body.get("id", ""), bool(body.get("confirmed", True)))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/survey")
+def survey(body: dict = Body(...)):
+    """Receive-only band occupancy survey. Transmits nothing."""
+    try:
+        return runtime.band_survey(
+            device_id=body.get("device_id", "sim-pluto-0"),
+            start_hz=float(body.get("start_hz", 902e6)),
+            stop_hz=float(body.get("stop_hz", 928e6)),
+            step_hz=float(body.get("step_hz", 2e6)),
+            sample_rate_hz=float(body.get("sample_rate_hz", 2.5e6)),
+            rx_gain_db=float(body.get("rx_gain_db", 40.0)),
+            samples=int(body.get("samples", 65536)),
+            name=body.get("name", "band survey"),
+            operator=body.get("operator", ""))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 @app.get("/api/safety/audit")
 def audit(n: int = 200):
     return runtime.safety.audit_tail(n)
@@ -402,5 +436,22 @@ async def live(ws: WebSocket, device_id: str = Query("sim-pluto-0"),
 
 
 # -- static UI ---------------------------------------------------------------
+class _NoCacheStatic(StaticFiles):
+    """Serve the UI with revalidation forced.
+
+    The UI is edited in place and reloaded constantly during bench work; a
+    stale cached app.js against a fresh index.html silently produces a page
+    whose controls do nothing, which is a miserable thing to debug.
+    """
+
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return False
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
 _UI_DIR = os.path.join(os.path.dirname(__file__), "..", "ui")
-app.mount("/", StaticFiles(directory=_UI_DIR, html=True), name="ui")
+app.mount("/", _NoCacheStatic(directory=_UI_DIR, html=True), name="ui")
