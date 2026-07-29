@@ -63,6 +63,9 @@ async function refreshStatus() {
   setTxIndicator(STATUS.safety);
   renderDashboard();
   fillSelectors();
+  refreshJobs();
+  refreshChain();
+  refreshRxProtection();
 }
 
 function renderDashboard() {
@@ -142,6 +145,84 @@ $("estop").onclick = async () => {
   alert("EMERGENCY STOP\n" + r.results.join("\n"));
   refreshStatus();
 };
+
+/* ---------- processing queue, RF chain, RX protection ---------- */
+async function refreshJobs() {
+  let r;
+  try { r = await api("/api/jobs"); } catch (e) { return; }
+  $("job-list").innerHTML = r.jobs.slice(0, 8).map((j) => {
+    const pct = Math.round(j.progress * 100);
+    const colour = { succeeded: "#35c4a2", failed: "#e0492e",
+                     cancelled: "#7d8ba0", running: "#4aa3ff",
+                     queued: "#7d8ba0" }[j.state];
+    return `<div class="expitem">
+      <div><b>${esc(j.description)}</b>
+        <span class="tag" style="color:${colour}">${esc(j.state)}</span>
+        ${j.state === "running" ? ` ${pct}%` : ""}<br>
+        <span class="mut">${esc(j.message)}${j.duration_s !== null
+          ? ` · ${j.duration_s}s` : ""}${j.error ? " · " + esc(j.error) : ""}</span></div>
+      <div>${["queued", "running"].includes(j.state)
+        ? `<button onclick="jobCancel('${j.job_id}')">Cancel</button>` : ""}
+        ${["failed", "cancelled"].includes(j.state)
+        ? `<button onclick="jobRetry('${j.job_id}')">Retry</button>` : ""}</div>
+    </div>`;
+  }).join("") || '<span class="mut">no jobs</span>';
+}
+window.jobCancel = async (id) => {
+  await api(`/api/jobs/${id}/cancel`, { method: "POST" }); refreshJobs();
+};
+window.jobRetry = async (id) => {
+  await api(`/api/jobs/${id}/retry`, { method: "POST" }); refreshJobs();
+};
+
+async function refreshChain() {
+  let comps;
+  try { comps = await api("/api/components"); } catch (e) { return; }
+  const opts = comps.map((c) =>
+    `<option value="${esc(c.component_id)}">${esc(c.kind)}: ${esc(c.name)}</option>`).join("");
+  for (const id of ["chain-tx", "chain-rx"]) {
+    const sel = $(id);
+    const chosen = [...sel.selectedOptions].map((o) => o.value);
+    sel.innerHTML = opts;
+    [...sel.options].forEach((o) => { o.selected = chosen.includes(o.value); });
+  }
+  const r = await api("/api/rf_chain");
+  const c = r.resolved;
+  $("chain-summary").innerHTML =
+    `TX: ${c.tx_path.map((x) => esc(x.name)).join(" → ") || "—"} · ` +
+    `RX: ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>` +
+    `total nominal loss ${c.total_loss_db} dB, delay ${c.total_delay_ns} ns` +
+    (c.note ? `<br><span style="color:#e8c96a">${esc(c.note)}</span>` : "");
+}
+
+$("chain-save").onclick = async () => {
+  const pick = (id) => [...$(id).selectedOptions].map((o) => o.value);
+  await api("/api/rf_chain", { method: "POST", body: {
+    tx_ids: pick("chain-tx"), rx_ids: pick("chain-rx") } });
+  refreshChain();
+};
+
+$("atten-save").onclick = async () => {
+  await api("/api/safety/path_attenuation", { method: "POST",
+    body: { attenuation_db: parseFloat($("atten-db").value) || 0 } });
+  refreshRxProtection();
+};
+
+async function refreshRxProtection() {
+  const dev = STATUS && STATUS.devices.length ? STATUS.devices[0].device_id : "";
+  if (!dev) return;
+  let c;
+  try { c = await api(`/api/safety/rx_protection?device_id=${encodeURIComponent(dev)}`); }
+  catch (e) { return; }
+  const cls = { critical: "err", warn: "warn", ok: "" }[c.severity];
+  $("rx-protection").innerHTML = c.severity === "ok"
+    ? `<div class="mut">Estimated ${c.rx_input_dbm} dBm at the receive port —
+       within safe limits (damage above ${c.thresholds.damage_dbm} dBm).</div>`
+    : `<div class="alert ${cls}"><b>${c.severity === "critical"
+        ? "Receiver at risk" : "Receive path warning"}</b> —
+       estimated ${c.rx_input_dbm} dBm at the port.<br>
+       ${c.warnings.map(esc).join("<br>")}</div>`;
+}
 
 /* ---------- hardware rescan ---------- */
 async function doRescan(uri) {
@@ -310,6 +391,7 @@ function viridis(t) {
 
 /* ---------- Range Lab ---------- */
 let lastProfile = null;
+let lastPeaks = [];
 
 $("range-bg").onclick = async () => {
   const id = $("range-device").value;
@@ -339,7 +421,9 @@ $("range-run").onclick = async () => {
     }});
     $("range-status").textContent = "done → " + r.experiment_id;
     lastProfile = r.range_profile;
+    lastPeaks = r.peaks;
     drawRangeProfile(r.range_profile, r.peaks);
+    refreshPriorRuns();
     renderPeaks(r.peaks);
     renderCalBanner(r.calibration);
     $("range-quality").textContent = JSON.stringify(
@@ -388,6 +472,21 @@ function drawRangeProfile(p, peaks) {
     ctx.fillStyle = "#7d8ba0"; ctx.font = "11px monospace";
     ctx.fillText((ranges[n - 1] * g / 8).toFixed(1) + " m", gx - 12, cv.height - 8);
   }
+  if (priorProfile && priorProfile.ranges_m) {
+    // a prior run is a separate measurement, so it gets its own colour and
+    // is drawn on the same range axis for honest comparison
+    ctx.strokeStyle = "#4aa3ff"; ctx.lineWidth = 1.2; ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    priorProfile.magnitude_db.forEach((v, i) => {
+      const rr = priorProfile.ranges_m[i];
+      if (rr > ranges[n - 1]) return;
+      const px = (rr / ranges[n - 1]) * (cv.width - 50) + 40;
+      i ? ctx.lineTo(px, Y(v)) : ctx.moveTo(px, Y(v));
+    });
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#8db8e8"; ctx.font = "11px monospace";
+    ctx.fillText("prior: " + priorProfile.label, 48, 20);
+  }
   if (p.magnitude_db_raw) {
     ctx.strokeStyle = "#3a4658"; ctx.lineWidth = 1; ctx.beginPath();
     p.magnitude_db_raw.forEach((v, i) =>
@@ -430,6 +529,34 @@ function renderPeaks(peaks) {
       ? ' <span class="tag" style="background:#3a2a10;color:#e8c96a">TX leakage?</span>' : ""}</td></tr>`).join("")
     || '<tr><td colspan="7" class="mut">no peaks above threshold</td></tr>';
 }
+
+/* prior-run overlay (UX-RNG-005) */
+let priorProfile = null;
+
+async function refreshPriorRuns() {
+  try {
+    const runs = await api("/api/experiments?kind=range");
+    $("range-prior").innerHTML = '<option value="">none</option>' +
+      runs.slice(0, 30).map((e) =>
+        `<option value="${esc(e.experiment_id)}">${esc(e.name)} — ${esc(e.experiment_id)}</option>`).join("");
+  } catch (e) { /* library may be empty */ }
+}
+
+$("range-prior-load").onclick = async () => {
+  const id = $("range-prior").value;
+  if (!id) return;
+  try {
+    const d = await api(`/api/experiments/${id}/derived/range_profile`);
+    priorProfile = d.product.range_profile;
+    priorProfile.label = id;
+    $("range-status").textContent = "overlaying " + id;
+    if (lastProfile) drawRangeProfile(lastProfile, lastPeaks);
+  } catch (e) { $("range-status").textContent = "overlay failed: " + e.message; }
+};
+$("range-prior-clear").onclick = () => {
+  priorProfile = null;
+  if (lastProfile) drawRangeProfile(lastProfile, lastPeaks);
+};
 
 /* scene editor */
 let sceneTargets = [

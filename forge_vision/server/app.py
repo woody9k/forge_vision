@@ -148,6 +148,81 @@ def set_profile(body: dict = Body(...)):
     return runtime.safety.status()
 
 
+# -- jobs (FR-API-003) --------------------------------------------------------
+@app.get("/api/jobs")
+def jobs(kind: str = "", active_only: bool = False):
+    return {"jobs": runtime.jobs.list(kind=kind, active_only=active_only),
+            "summary": runtime.jobs.summary()["counts"]}
+
+
+@app.post("/api/jobs")
+def submit_job(body: dict = Body(...)):
+    try:
+        return runtime.submit_job(body.get("kind", ""), body.get("params", {}))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/jobs/{job_id}")
+def job_status(job_id: str, include_result: bool = False):
+    try:
+        return runtime.job_status(job_id, include_result=include_result)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    try:
+        return runtime.jobs.cancel(job_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: str):
+    try:
+        return runtime.jobs.retry(job_id).to_dict()
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+# -- RF chain (FR-RFC-006) ----------------------------------------------------
+@app.get("/api/rf_chain")
+def rf_chain():
+    return {"declared": runtime.rf_chain, "resolved": runtime.current_chain()}
+
+
+@app.post("/api/rf_chain")
+def set_rf_chain(body: dict = Body(...)):
+    try:
+        return runtime.set_rf_chain(
+            tx_ids=body.get("tx_ids"), rx_ids=body.get("rx_ids"),
+            antenna_tx=body.get("antenna_tx", ""),
+            antenna_rx=body.get("antenna_rx", ""))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+# -- receive-path protection (FR-SAF-005/006) ---------------------------------
+@app.get("/api/safety/rx_protection")
+def rx_protection(device_id: str = "sim-pluto-0"):
+    try:
+        cfg = runtime.device(device_id).config
+        return runtime.safety.rx_protection(cfg.tx_gain_db, cfg.rx_gain_db)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/safety/path_attenuation")
+def path_attenuation(body: dict = Body(...)):
+    try:
+        return runtime.safety.declare_path_attenuation(
+            float(body.get("attenuation_db", 0.0)))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- calibration -------------------------------------------------------------
 @app.get("/api/calibration/{device_id}")
 def calibration(device_id: str, waveform: str = ""):

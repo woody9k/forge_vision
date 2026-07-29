@@ -21,6 +21,7 @@ from ..devices.simulated import (SceneTarget, SimScene, SimulatedPluto,
 from ..dsp import stages as _stages  # noqa: F401  (registers stages)
 from ..dsp.pipeline import Pipeline, PipelineContext
 from ..experiments.store import ExperimentStore
+from ..jobs import JobManager
 from ..imaging.bscan import BScanBuilder
 from ..imaging.migration import focused_targets, migrate_bscan
 from ..reports import site_report
@@ -84,6 +85,9 @@ class Runtime:
         self.device_locks: dict[str, threading.Lock] = {}
         self.calibration: dict[str, dict] = {}       # device_id -> assets
         self.scans: dict[str, dict] = {}             # scan experiment_id -> session
+        self.jobs = JobManager()                     # FR-API-003
+        self.rf_chain: dict = {"tx_ids": [], "rx_ids": [],
+                               "antenna_tx": "", "antenna_rx": ""}
         self._register(SimulatedPluto("sim-pluto-0"))
         self._discover_hardware()
 
@@ -164,7 +168,12 @@ class Runtime:
         return {"stopped": True, "results": results}
 
     def _enable_tx(self, dev, waveform, tx_gain_db: float) -> None:
-        self.safety.validate_tx(dev.config.center_frequency_hz, waveform, tx_gain_db)
+        # only a physical receiver can be damaged, so the RX-protection
+        # interlock is enforced for real radios and recorded for simulated ones
+        self.safety.validate_tx(
+            dev.config.center_frequency_hz, waveform, tx_gain_db,
+            rx_gain_db=dev.config.rx_gain_db,
+            enforce_rx_protection=not dev.kind.startswith("simulated"))
         dev.load_waveform(waveform)
         dev.enable_tx()
         self.safety.notify_tx_started(
@@ -285,7 +294,8 @@ class Runtime:
         manifest = self.store.create(
             name="background capture", kind="calibration", operator=operator,
             objective="static scene baseline for background subtraction",
-            hardware={"device_id": device_id, "kind": dev.kind},
+            hardware={"device_id": device_id, "kind": dev.kind,
+                      "rf_chain": self.current_chain()},
             rf_config=dev.config.to_dict(),
             calibration={"cable_delay_s": self.calibration[device_id]["cable_delay_s"]})
         exp_id = manifest["identity"]["experiment_id"]
@@ -329,7 +339,8 @@ class Runtime:
         manifest = self.store.create(
             name=name, kind="range", operator=operator, tags=tags or [],
             objective=f"range profile via {waveform_name}",
-            hardware={"device_id": device_id, "kind": dev.kind},
+            hardware={"device_id": device_id, "kind": dev.kind,
+                      "rf_chain": self.current_chain()},
             rf_config=dev.config.to_dict(),
             calibration={"cable_delay_s": cal["cable_delay_s"],
                          "background_experiment": (cal.get("background") or {}).get(
@@ -411,7 +422,8 @@ class Runtime:
             name=plan.get("notes") or "linear scan", kind="scan", operator=operator,
             objective=f"B-scan {plan['start_m']}–{plan['end_m']} m "
                       f"step {plan['step_m']} m",
-            hardware={"device_id": device_id, "kind": dev.kind},
+            hardware={"device_id": device_id, "kind": dev.kind,
+                      "rf_chain": self.current_chain()},
             geometry={"scan_plan": plan, "coordinate_system":
                       "local scan axis, meters from start position"},
             rf_config=dev.config.to_dict(),
@@ -566,7 +578,8 @@ class Runtime:
             manifest = self.store.create(
                 name=name, kind="capture", operator=operator, tags=tags or [],
                 objective="raw I/Q recording",
-                hardware={"device_id": device_id, "kind": dev.kind},
+                hardware={"device_id": device_id, "kind": dev.kind,
+                          "rf_chain": self.current_chain()},
                 rf_config=dev.config.to_dict())
             exp_id = manifest["identity"]["experiment_id"]
             entries = []
@@ -612,11 +625,17 @@ class Runtime:
     def site_scene(self, site_id: str, tolerance_m: float = 0.6,
                    slice_depth_m: float | None = None,
                    migration_params: dict | None = None,
-                   detect_params: dict | None = None) -> dict:
+                   detect_params: dict | None = None, ctx=None) -> dict:
         """Build the fused world view for a site (Milestone D)."""
         site = self.sites.load(site_id)
         results, errors = [], []
-        for placement in site["scans"]:
+        total = max(1, len(site["scans"]))
+        for i, placement in enumerate(site["scans"]):
+            if ctx is not None:
+                ctx.check()
+                ctx.progress(i / total,
+                             f"focusing {placement.get('label', '')} "
+                             f"({i + 1}/{total})")
             try:
                 results.append(self._scan_result(placement, migration_params,
                                                  detect_params))
@@ -690,7 +709,8 @@ class Runtime:
     def band_survey(self, device_id: str, start_hz: float, stop_hz: float,
                     step_hz: float = 2e6, sample_rate_hz: float = 2.5e6,
                     rx_gain_db: float = 40.0, samples: int = 65536,
-                    name: str = "band survey", operator: str = "") -> dict:
+                    name: str = "band survey", operator: str = "",
+                    ctx=None) -> dict:
         """Sweep a frequency range with the receiver only and report occupancy.
 
         Transmits nothing, so it is safe before any TX bring-up, and answers
@@ -718,7 +738,8 @@ class Runtime:
             name=name, kind="survey", operator=operator,
             objective=f"receive-only occupancy survey {start_hz / 1e6:.1f}-"
                       f"{stop_hz / 1e6:.1f} MHz",
-            hardware={"device_id": device_id, "kind": dev.kind},
+            hardware={"device_id": device_id, "kind": dev.kind,
+                      "rf_chain": self.current_chain()},
             rf_config={"sample_rate_hz": sample_rate_hz,
                        "rx_gain_db": rx_gain_db, "step_hz": step_hz})
         exp_id = manifest["identity"]["experiment_id"]
@@ -734,6 +755,10 @@ class Runtime:
                                           "rx_bandwidth_hz": min(
                                               sample_rate_hz, caps.max_bandwidth),
                                           "rx_gain_db": rx_gain_db})
+                    if ctx is not None:
+                        ctx.check()
+                        ctx.progress(i / steps,
+                                     f"{freq / 1e6:.1f} MHz ({i + 1}/{steps})")
                     dev.configure(cfg)
                     seg = dev.receive(samples)
                     points.append(_survey_point(freq, seg))
@@ -793,6 +818,70 @@ class Runtime:
         return scene.to_dict()
 
     # -- dashboard -----------------------------------------------------------
+    # -- long-running jobs (FR-API-003) --------------------------------------
+    def submit_job(self, kind: str, params: dict) -> dict:
+        """Run one of the slow operations in the background."""
+        builders = {
+            "survey": self._job_survey,
+            "site_scene": self._job_site_scene,
+            "replay": self._job_replay,
+        }
+        if kind not in builders:
+            raise KeyError(f"unknown job kind: {kind}; "
+                           f"expected one of {sorted(builders)}")
+        fn, description = builders[kind](params)
+        job = self.jobs.submit(kind, description, fn, params)
+        self.safety.audit("job_submitted", job_id=job.job_id, kind=kind)
+        return job.to_dict()
+
+    def _job_survey(self, p: dict):
+        def run(ctx):
+            return self.band_survey(
+                device_id=p.get("device_id", "sim-pluto-0"),
+                start_hz=float(p.get("start_hz", 902e6)),
+                stop_hz=float(p.get("stop_hz", 928e6)),
+                step_hz=float(p.get("step_hz", 2e6)),
+                sample_rate_hz=float(p.get("sample_rate_hz", 2.5e6)),
+                rx_gain_db=float(p.get("rx_gain_db", 40.0)),
+                samples=int(p.get("samples", 65536)),
+                name=p.get("name", "band survey"),
+                operator=p.get("operator", ""), ctx=ctx)
+        lo, hi = p.get("start_hz", 902e6) / 1e6, p.get("stop_hz", 928e6) / 1e6
+        return run, f"band survey {lo:.0f}-{hi:.0f} MHz"
+
+    def _job_site_scene(self, p: dict):
+        site_id = p["site_id"]
+        def run(ctx):
+            return self.site_scene(site_id,
+                                   tolerance_m=float(p.get("tolerance_m", 0.6)),
+                                   slice_depth_m=p.get("slice_depth_m"), ctx=ctx)
+        return run, f"build scene for site {site_id}"
+
+    def _job_replay(self, p: dict):
+        exp_id = p["experiment_id"]
+        def run(ctx):
+            ctx.progress(0.1, "reprocessing stored raw data")
+            return self.replay(exp_id, medium=p.get("medium"),
+                               pipeline_overrides=p.get("pipeline_overrides"))
+        return run, f"replay {exp_id}"
+
+    def job_status(self, job_id: str, include_result: bool = False) -> dict:
+        return self.jobs.get(job_id).to_dict(include_result=include_result)
+
+    def set_rf_chain(self, tx_ids=None, rx_ids=None, antenna_tx: str = "",
+                     antenna_rx: str = "") -> dict:
+        """Declare the cable/adapter chain currently patched up (FR-RFC-006)."""
+        self.rf_chain = {"tx_ids": list(tx_ids or []),
+                         "rx_ids": list(rx_ids or []),
+                         "antenna_tx": antenna_tx, "antenna_rx": antenna_rx}
+        self.safety.audit("rf_chain_declared", **self.rf_chain)
+        return self.current_chain()
+
+    def current_chain(self) -> dict:
+        c = self.rf_chain
+        return self.components.describe_chain(
+            c["tx_ids"], c["rx_ids"], c["antenna_tx"], c["antenna_rx"])
+
     def _describe_device(self, dev) -> dict:
         d = dev.describe()
         # the UI must never offer a waveform this radio cannot transmit

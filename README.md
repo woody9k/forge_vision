@@ -4,11 +4,16 @@ Software-defined RF perception and subsurface imaging platform, implementing
 the **Forge Vision Platform Requirements v0.1** (see
 `Forge_Vision_Platform_Requirements_v0.1.docx`).
 
-This build covers roadmap releases **0.1 RF Bench**, **0.2 Range Lab**, and
-**0.3 Scan Studio**: reliable device control and raw capture, calibrated FMCW
-range profiles with confidence-aware peak detection, and position-indexed
-B-scan imaging — all on top of the experiment/provenance system the spec
-requires.
+This build covers roadmap releases **0.1 RF Bench** through **0.5 SAGE
+Perception**: reliable device control and raw capture, calibrated FMCW range
+profiles with confidence-aware peak detection, position-indexed B-scan
+imaging, migration and cross-scan fusion into world coordinates, and a
+grounded assistant over the stored evidence — all on top of the
+experiment/provenance system the spec requires.
+
+Releases 0.6 (portable field system) and 1.0 (validated platform) are not
+started. Nothing has ever transmitted: the receive path is verified against
+real hardware, the transmit path is exercised only in simulation.
 
 ## Quick start
 
@@ -63,7 +68,7 @@ Open http://127.0.0.1:8347/ and:
 .venv/bin/python -m pytest tests/
 ```
 
-40 tests keyed to the spec's reference experiments and acceptance criteria:
+138 tests keyed to the spec's reference experiments and acceptance criteria:
 
 | Spec item | Test |
 |---|---|
@@ -77,12 +82,18 @@ Open http://127.0.0.1:8347/ and:
 | FR-SAF-* interlock, limits, e-stop, fault-safe | `test_safety.py` |
 | FR-DAT-* immutability, integrity, export/import | `test_experiments.py` |
 | FR-DSP-010 determinism | `test_dsp.py::test_pipeline_determinism` |
+| Milestone D world-coordinate anomaly | `test_scene.py::test_end_to_end_perpendicular_scans_in_world_coordinates` |
+| Milestone E evidence-linked answer | `test_sage.py::test_milestone_e_explains_anomaly_with_evidence_links` |
+| FR-API-003 job submit/cancel/retry | `test_jobs.py` |
+| FR-SAF-005/006 receive-path protection | `test_jobs.py::test_bare_tx_to_rx_cable_is_critical` |
+| FR-RFC-006 connector chain | `test_jobs.py::test_experiment_records_the_connector_chain` |
 
 ## Architecture
 
 ```
 forge_vision/
   config.py          physical constants, media presets, safety limits
+  jobs.py            cancellable background jobs with progress (FR-API-003)
   safety.py          TX interlock, limit enforcement, audit log, e-stop
   waveforms.py       versioned waveform catalog (CW, FMCW, stepped, RX-only)
   devices/
