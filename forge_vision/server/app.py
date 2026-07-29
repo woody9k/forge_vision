@@ -326,6 +326,80 @@ async def import_package(file: UploadFile):
         raise _fail(exc)
 
 
+# -- sites / World View (release 0.4) -----------------------------------------
+@app.get("/api/sites")
+def sites():
+    return runtime.sites.list()
+
+
+@app.post("/api/sites")
+def create_site(body: dict = Body(...)):
+    try:
+        return runtime.sites.create(
+            name=body.get("name", "site"),
+            coordinate_system=body.get("coordinate_system", ""),
+            notes=body.get("notes", ""))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sites/{site_id}")
+def site(site_id: str):
+    try:
+        return runtime.sites.load(site_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/sites/{site_id}/register")
+def register_scan(site_id: str, body: dict = Body(...)):
+    try:
+        return runtime.sites.register_scan(
+            site_id, body["experiment_id"],
+            origin_x_m=float(body.get("origin_x_m", 0.0)),
+            origin_y_m=float(body.get("origin_y_m", 0.0)),
+            heading_deg=float(body.get("heading_deg", 0.0)),
+            label=body.get("label", ""),
+            position_uncertainty_m=float(body.get("position_uncertainty_m", 0.05)))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/sites/{site_id}/unregister")
+def unregister_scan(site_id: str, body: dict = Body(...)):
+    try:
+        return runtime.sites.unregister_scan(site_id, body["experiment_id"])
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/sites/{site_id}/delete")
+def delete_site(site_id: str):
+    try:
+        runtime.sites.delete(site_id)
+        return {"deleted": site_id}
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sites/{site_id}/scene")
+def site_scene(site_id: str, tolerance_m: float = 0.6,
+               slice_depth_m: float | None = None):
+    try:
+        return runtime.site_scene(site_id, tolerance_m=tolerance_m,
+                                  slice_depth_m=slice_depth_m)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sites/{site_id}/report")
+def site_report_endpoint(site_id: str, tolerance_m: float = 0.6):
+    try:
+        return runtime.site_report(site_id, tolerance_m=tolerance_m)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- RF components / Antenna Lab (FR-RFC-*) -----------------------------------
 @app.get("/api/components")
 def components(kind: str = ""):

@@ -154,3 +154,52 @@ def test_survey_endpoint_is_receive_only(client):
     assert body["quietest"]["peak_dbfs"] <= body["busiest"]["peak_dbfs"]
     # nothing transmitted, and the interlock was never armed
     assert client.get("/api/status").json()["safety"]["armed"] is False
+
+
+def test_site_api_flow(client):
+    """Register two crossing scans to a site and fuse them over HTTP."""
+    client.post("/api/devices/sim-pluto-0/connect")
+    arm(client, "t")
+    client.post("/api/sim/sim-pluto-0/scene", json={
+        "targets": [{"kind": "point", "x_m": 1.0, "depth_m": 0.8,
+                     "amplitude": 0.35}],
+        "medium": "soil_dry", "leakage_amplitude": 1e-4})
+
+    scans = []
+    for _ in range(2):
+        r = client.post("/api/scan/start", json={
+            "device_id": "sim-pluto-0",
+            "plan": {"start_m": 0, "end_m": 2.0, "step_m": 0.25,
+                     "medium": "soil_dry", "chirps": 2, "max_range_m": 8.0}})
+        sid = r.json()["scan_id"]
+        for x in r.json()["positions_m"]:
+            client.post(f"/api/scan/{sid}/point",
+                        json={"x_m": x, "operator_override": True})
+        client.post(f"/api/scan/{sid}/finalize")
+        scans.append(sid)
+
+    site = client.post("/api/sites", json={"name": "api site"}).json()
+    sid = site["site_id"]
+    assert client.post(f"/api/sites/{sid}/register", json={
+        "experiment_id": scans[0], "origin_x_m": 0, "origin_y_m": 1.0,
+        "heading_deg": 0, "label": "EW"}).status_code == 200
+    assert client.post(f"/api/sites/{sid}/register", json={
+        "experiment_id": scans[1], "origin_x_m": 1.0, "origin_y_m": 0,
+        "heading_deg": 90, "label": "NS"}).status_code == 200
+
+    scene = client.get(f"/api/sites/{sid}/scene?tolerance_m=0.8").json()
+    assert scene["errors"] == []
+    assert len(scene["scans"]) == 2
+    assert scene["findings"]
+    assert all("depth_interval_m" in f for f in scene["findings"])
+
+    sliced = client.get(f"/api/sites/{sid}/scene?slice_depth_m=0.8").json()
+    assert sliced["depth_slice"]["samples"]
+
+    rep = client.get(f"/api/sites/{sid}/report").json()
+    assert "# Site report" in rep["markdown"]
+    assert "Limitations" in rep["markdown"] or "limitations" in rep["markdown"]
+
+
+def test_site_scene_404_on_unknown_site(client):
+    assert client.get("/api/sites/nope/scene").status_code == 404
