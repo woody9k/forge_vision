@@ -646,6 +646,46 @@ class Runtime:
         return {"site_id": site_id, "markdown": text,
                 "findings": scene["findings"], "errors": scene["errors"]}
 
+    # -- SAGE assistance (release 0.5, §8) -----------------------------------
+    def sage_ask(self, question: str, site_id: str = "",
+                 experiment_id: str = "") -> dict:
+        """Answer a grounded question. Read-only by construction (FR-AI-008):
+        this path has no way to enable transmission or change any setting."""
+        from ..sage.query import ask
+        scene = self.site_scene(site_id) if site_id else None
+        return ask(question, store=self.store, scene=scene,
+                   experiment_id=experiment_id)
+
+    def sage_experiment(self, experiment_id: str) -> dict:
+        from ..sage.analysis import assess_experiment, summarize_experiment
+        from ..sage.facts import answer
+        return answer(summarize_experiment(self.store, experiment_id)
+                      + assess_experiment(self.store, experiment_id),
+                      f"summary and quality assessment of {experiment_id}")
+
+    def sage_explain(self, site_id: str, index: int) -> dict:
+        from ..sage.analysis import explain_finding
+        from ..sage.facts import answer
+        scene = self.site_scene(site_id)
+        findings = scene["findings"]
+        if not 0 <= index < len(findings):
+            raise KeyError(f"site has {len(findings)} finding(s); "
+                           f"no #{index + 1}")
+        return answer(explain_finding(scene["site"], findings[index], index),
+                      f"why is finding #{index + 1} highlighted?")
+
+    def sage_recommend(self, site_id: str) -> dict:
+        from ..sage.analysis import recommend_next
+        from ..sage.facts import answer
+        return answer(recommend_next(self.site_scene(site_id)),
+                      "what should I measure next?")
+
+    def sage_compare(self, a_id: str, b_id: str) -> dict:
+        from ..sage.analysis import compare_experiments
+        from ..sage.facts import answer
+        return answer(compare_experiments(self.store, a_id, b_id),
+                      f"compare {a_id} with {b_id}")
+
     # -- band survey (receive only) ------------------------------------------
     def band_survey(self, device_id: str, start_hz: float, stop_hz: float,
                     step_hz: float = 2e6, sample_rate_hz: float = 2.5e6,
