@@ -40,6 +40,7 @@ document.querySelectorAll("nav button").forEach((b) => {
     if (b.dataset.tab === "dashboard") refreshStatus();
     if (b.dataset.tab === "antenna") refreshComponents();
     if (b.dataset.tab === "world") refreshSites();
+    if (b.dataset.tab === "sage") refreshSage();
   };
 });
 
@@ -970,12 +971,22 @@ function renderFindings() {
       <div><b>#${i + 1}</b> (${f.site_x_m.toFixed(2)}, ${f.site_y_m.toFixed(2)}) m
         · depth ${f.depth_m.toFixed(2)} m
         <span class="mut">[${f.depth_interval_m[0].toFixed(2)}–${f.depth_interval_m[1].toFixed(2)}]</span><br>
-        <span class="mut">${esc(f.classification)}</span></div>
+        <span class="mut">${esc(f.classification)}</span>
+        ${findingActions(i)}</div>
       <div><span class="tag" style="${f.supporting_scans >= 2
         ? "background:#12241d;color:#86dfc0" : ""}">${f.supporting_scans} scan${f.supporting_scans > 1 ? "s" : ""}</span>
         <span class="tag">${esc(f.confidence.overall)}</span></div>
     </div>`).join("") || '<span class="mut">no findings — register scans and build the scene</span>';
 }
+
+window.explainFinding = async (i) => {
+  const sid = $("site-select").value;
+  document.querySelector('nav button[data-tab="sage"]').click();
+  await refreshSage();
+  $("sage-site").value = sid;
+  $("sage-q").value = `Why is finding ${i + 1} highlighted?`;
+  renderAnswer(await api(`/api/sage/site/${sid}/finding/${i}`));
+};
 
 window.selectFinding = (i) => {
   selectedFinding = i;
@@ -992,6 +1003,12 @@ window.selectFinding = (i) => {
   renderFindings();
   drawWorld();
 };
+
+// "why is this highlighted?" belongs next to the thing being asked about
+function findingActions(i) {
+  return `<button style="margin-top:6px"
+      onclick="event.stopPropagation(); explainFinding(${i})">Ask SAGE why ↗</button>`;
+}
 
 function drawMigrated() {
   const cv = $("mig-plot"), ctx = cv.getContext("2d");
@@ -1056,6 +1073,110 @@ $("site-report").onclick = async () => {
     $("site-status").textContent = "report exported";
   } catch (e) { $("site-status").textContent = "report failed: " + e.message; }
 };
+
+/* ---------- SAGE assistant (release 0.5) ---------- */
+const KIND_STYLE = {
+  observation: "background:#12241d;color:#86dfc0",
+  calculation: "background:#101f2e;color:#8db8e8",
+  inference:   "background:#2b2410;color:#e8c96a",
+  hypothesis:  "background:#2a1a2e;color:#d8a0e0",
+  unknown:     "background:#1c1c22;color:#9aa4b2",
+};
+const SUGGESTED = [
+  "Why is finding 1 highlighted?",
+  "Show anomalies between 0.5 and 2 meters deep",
+  "Which findings are confirmed by more than one scan?",
+  "What should I measure next?",
+  "What is wrong with this experiment?",
+  "Summarize this experiment",
+];
+
+async function refreshSage() {
+  const sites = await api("/api/sites");
+  const ss = $("sage-site");
+  const cur = ss.value;
+  ss.innerHTML = '<option value="">— no site —</option>' + sites.map((s) =>
+    `<option value="${esc(s.site_id)}">${esc(s.name)}</option>`).join("");
+  if (sites.some((s) => s.site_id === cur)) ss.value = cur;
+  else if (sites.length) ss.value = sites[0].site_id;
+
+  const exps = await api("/api/experiments");
+  const es = $("sage-exp");
+  const ecur = es.value;
+  es.innerHTML = '<option value="">— no experiment —</option>' + exps.slice(0, 40)
+    .map((e) => `<option value="${esc(e.experiment_id)}">${esc(e.name)} (${esc(e.kind)})</option>`)
+    .join("");
+  if (exps.some((e) => e.experiment_id === ecur)) es.value = ecur;
+
+  $("sage-suggest").innerHTML = SUGGESTED.map((q) =>
+    `<button style="margin:0 6px 6px 0" onclick="sageAsk(${JSON.stringify(q).replace(/"/g, "&quot;")})">${esc(q)}</button>`).join("");
+}
+
+window.sageAsk = async (q) => {
+  $("sage-q").value = q;
+  await doAsk(q);
+};
+$("sage-ask").onclick = () => doAsk($("sage-q").value);
+$("sage-q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doAsk($("sage-q").value);
+});
+
+async function doAsk(question) {
+  $("sage-status").textContent = "reasoning over stored evidence…";
+  try {
+    const r = await api("/api/sage/ask", { method: "POST", body: {
+      question, site_id: $("sage-site").value,
+      experiment_id: $("sage-exp").value } });
+    renderAnswer(r);
+    $("sage-status").textContent = "";
+  } catch (e) { $("sage-status").textContent = "failed: " + e.message; }
+}
+
+$("sage-quality").onclick = async () => {
+  const id = $("sage-exp").value;
+  if (!id) { alert("select an experiment"); return; }
+  renderAnswer(await api(`/api/sage/experiment/${id}`));
+};
+$("sage-next").onclick = async () => {
+  const id = $("sage-site").value;
+  if (!id) { alert("select a site"); return; }
+  renderAnswer(await api(`/api/sage/site/${id}/recommend`));
+};
+
+function renderAnswer(r) {
+  const sev = { critical: "#e0492e", warn: "#e0a52e", info: "#263042" };
+  if (!r.understood) {
+    $("sage-answer").innerHTML =
+      `<div class="alert warn"><b>Not answered.</b> ${esc(r.note)}</div>`;
+    $("sage-meta").textContent = "";
+    return;
+  }
+  $("sage-meta").textContent =
+    ` — ${r.facts.length} statement(s), ${r.evidence_count} evidence link(s)` +
+    (r.question ? ` · “${r.question}”` : "");
+  const note = r.note ? `<div class="alert warn">${esc(r.note)}</div>` : "";
+  $("sage-answer").innerHTML = note + (r.facts.map((f) => `
+    <div class="panel" style="border-left:3px solid ${sev[f.severity] || sev.info};
+         background:var(--panel2); margin-bottom:9px">
+      <div style="margin-bottom:6px">
+        <span class="tag" style="${KIND_STYLE[f.kind] || ""}"
+              title="${esc(f.kind_meaning)}">${esc(f.kind)}</span>
+        ${f.severity !== "info"
+          ? `<span class="tag" style="background:#2d1410;color:#f0a08e">${esc(f.severity)}</span>` : ""}
+        <span class="mut">${esc(f.kind_meaning)}</span>
+      </div>
+      <div>${esc(f.statement)}</div>
+      ${f.action ? `<div class="mut" style="margin-top:6px">→ ${esc(f.action)}</div>` : ""}
+      ${f.evidence.length ? `<div style="margin-top:7px">${f.evidence.map((e) =>
+        e.type === "experiment"
+          ? `<span class="tag" style="cursor:pointer"
+                   onclick="openLibrary('${esc(e.experiment_id)}')"
+                   title="${esc(e.detail || "")}">${esc(e.artifact || "experiment")}
+             ${esc(e.locator || "")} ↗</span>`
+          : `<span class="tag">site ${esc(e.site_id)}</span>`).join(" ")}</div>` : ""}
+    </div>`).join("") ||
+    '<p class="mut">No statements — nothing in the stored data matched.</p>');
+}
 
 /* ---------- Antenna Lab ---------- */
 let selectedComp = null;

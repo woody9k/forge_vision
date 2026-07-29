@@ -15,6 +15,7 @@
     <button data-tab="range">Range Lab</button>
     <button data-tab="scan">Scan Studio</button>
     <button data-tab="world">World View</button>
+    <button data-tab="sage">SAGE</button>
     <button data-tab="antenna">Antenna Lab</button>
     <button data-tab="library">Experiments</button>
     <button data-tab="safety">Safety</button>
@@ -224,6 +225,35 @@
           relative to the strongest focused response.)</span></label>
       </div>
       <canvas id="mig-plot" width="1280" height="300"></canvas>
+    </div>
+  </section>
+
+  <!-- ============ SAGE ASSISTANT ============ -->
+  <section id="tab-sage" class="tab">
+    <div class="toolbar">
+      <label>Site <select id="sage-site"></select></label>
+      <label>Experiment <select id="sage-exp"></select></label>
+      <button id="sage-quality">Assess experiment</button>
+      <button id="sage-next">What next?</button>
+      <span id="sage-status" class="mut"></span>
+    </div>
+    <div class="toolbar">
+      <input id="sage-q" type="text" size="60"
+             placeholder="ask about the selected site or experiment…">
+      <button id="sage-ask" class="primary">Ask</button>
+    </div>
+    <div class="panel">
+      <h2>Suggested questions</h2>
+      <div id="sage-suggest"></div>
+    </div>
+    <div class="panel">
+      <h2>Answer <span class="mut" id="sage-meta"></span></h2>
+      <div id="sage-answer">
+        <p class="mut">SAGE answers only from stored measurements. Every
+        statement carries an epistemic label and links to the artifacts behind
+        it; when it cannot ground an answer, it says so rather than guessing.
+        It is read-only — it cannot transmit or change any setting.</p>
+      </div>
     </div>
   </section>
 

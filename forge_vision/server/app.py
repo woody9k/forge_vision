@@ -400,6 +400,49 @@ def site_report_endpoint(site_id: str, tolerance_m: float = 0.6):
         raise _fail(exc)
 
 
+# -- SAGE assistant (release 0.5, §8) -----------------------------------------
+@app.post("/api/sage/ask")
+def sage_ask(body: dict = Body(...)):
+    try:
+        return runtime.sage_ask(body.get("question", ""),
+                                site_id=body.get("site_id", ""),
+                                experiment_id=body.get("experiment_id", ""))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sage/experiment/{exp_id}")
+def sage_experiment(exp_id: str):
+    try:
+        return runtime.sage_experiment(exp_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sage/site/{site_id}/finding/{index}")
+def sage_explain(site_id: str, index: int):
+    try:
+        return runtime.sage_explain(site_id, index)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sage/site/{site_id}/recommend")
+def sage_recommend(site_id: str):
+    try:
+        return runtime.sage_recommend(site_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sage/compare")
+def sage_compare(a: str, b: str):
+    try:
+        return runtime.sage_compare(a, b)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- RF components / Antenna Lab (FR-RFC-*) -----------------------------------
 @app.get("/api/components")
 def components(kind: str = ""):
