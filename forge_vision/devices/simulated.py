@@ -114,11 +114,13 @@ PLUTO_PLUS_CAPS = DeviceCapabilities(
     transports=("usb", "ethernet"),
 )
 
-# stock ADI PlutoSDR Rev.B/C (AD9363): narrower tuning and RF bandwidth
+# stock ADI PlutoSDR Rev.B (AD9363A), measured from firmware v0.39:
+# tuning 325 MHz-3.8 GHz, 56 MHz RX / 40 MHz TX bandwidth, 2.083-61.44 MSPS
 PLUTO_REV_B_CAPS = DeviceCapabilities(
     min_frequency=325e6, max_frequency=3.8e9,
-    min_sample_rate=0.65e6, max_sample_rate=61.44e6,
-    max_bandwidth=20e6, rx_channels=1, tx_channels=1,
+    min_sample_rate=2.083333e6, max_sample_rate=61.44e6,
+    max_bandwidth=56e6, max_tx_bandwidth=40e6,
+    rx_channels=1, tx_channels=1,
     max_rx_gain_db=71.0, min_tx_gain_db=-89.75, max_tx_gain_db=0.0,
     transports=("usb",),
 )

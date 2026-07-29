@@ -84,10 +84,10 @@ class Waveform:
             problems.append(
                 f"sample rate {self.sample_rate:.3g} exceeds device max "
                 f"{capabilities.max_sample_rate:.3g}")
-        if self.bandwidth_hz > capabilities.max_bandwidth:
+        if self.bandwidth_hz > capabilities.tx_bandwidth:
             problems.append(
-                f"bandwidth {self.bandwidth_hz:.3g} exceeds device max "
-                f"{capabilities.max_bandwidth:.3g}")
+                f"bandwidth {self.bandwidth_hz:.3g} exceeds device transmit max "
+                f"{capabilities.tx_bandwidth:.3g}")
         if not 0 < self.amplitude <= 1.0:
             problems.append(f"amplitude {self.amplitude} outside (0, 1]")
         if not 0 < self.duty_cycle <= 1.0:
@@ -108,6 +108,14 @@ _register(Waveform(
     name="fmcw_bench_56M", version="1.0", kind="fmcw",
     sample_rate=61.44e6, duration_s=1e-3, amplitude=0.2, bandwidth_hz=56e6,
     intended_use="Bench ranging; ~2.7 m free-space resolution",
+    processing="dechirp + FFT range profile"))
+
+_register(Waveform(
+    name="fmcw_pluto_40M", version="1.0", kind="fmcw",
+    sample_rate=61.44e6, duration_s=1e-3, amplitude=0.2, bandwidth_hz=40e6,
+    intended_use="Widest sweep a stock AD9363 Pluto will transmit; "
+                 "~3.7 m free-space resolution. Exceeds the AD9363's 20 MHz "
+                 "datasheet spec — verify flatness before trusting accuracy",
     processing="dechirp + FFT range profile"))
 
 _register(Waveform(

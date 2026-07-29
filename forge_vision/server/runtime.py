@@ -89,13 +89,17 @@ class Runtime:
             device_id = f"pluto-{u}"
             if device_id in self.devices:
                 result["already_present"].append(device_id)
+                if not uri:
+                    break      # the default transports are one radio
                 continue
             try:
                 dev = PlutoDevice(u)
                 dev.connect()
                 self._register(dev)
                 self.safety.audit("device_discovered", device=device_id, uri=u)
-                result["added"].append(dev.describe())
+                result["added"].append(self._describe_device(dev))
+                if not uri:
+                    break      # stop at the first default transport that opens
             except Exception as exc:  # noqa: BLE001 - report, don't crash
                 result["errors"].append({"uri": u, "error": str(exc)})
         return result

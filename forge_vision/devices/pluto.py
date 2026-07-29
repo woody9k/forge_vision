@@ -43,7 +43,9 @@ except Exception as _exc:  # noqa: BLE001 - missing libiio.so raises OSError
 # driver either refuses the buffer or allocation becomes unreliable
 MAX_BURST_SAMPLES = 1 << 23   # ~8.4 M complex samples (~1.1 s of 8-chirp FMCW)
 
-DEFAULT_URIS = ("ip:192.168.2.1", "usb:")
+# usb: first — the direct backend avoids the RNDIS/iiod hop, and it is the
+# same physical board as the 192.168.2.1 gadget address
+DEFAULT_URIS = ("usb:", "ip:192.168.2.1")
 
 # conservative stock-Pluto limits used when the device does not report bounds
 STOCK_PLUTO_CAPS = DeviceCapabilities(
@@ -78,6 +80,14 @@ class PlutoDevice(DeviceAdapter):
 
     @classmethod
     def discover(cls, uris: tuple = DEFAULT_URIS) -> list["PlutoDevice"]:
+        """Probe the default transports for a radio.
+
+        `usb:` and `ip:192.168.2.1` are the *same* board — the latter is the
+        default address of the USB ethernet gadget — so we stop at the first
+        one that opens rather than registering one radio twice. A Pluto+ on a
+        real Ethernet port has a different LAN address and is added through
+        the explicit-URI path instead.
+        """
         found = []
         if not HAVE_ADI:
             return found
@@ -86,52 +96,89 @@ class PlutoDevice(DeviceAdapter):
                 dev = cls(uri)
                 dev.connect()
                 found.append(dev)
+                break
             except Exception:  # noqa: BLE001 - absent hardware is expected
                 continue
         return found
 
     # -- capability detection (FR-DEV-002) ----------------------------------
-    def _read_lo_bounds(self, output: bool) -> tuple[float, float] | None:
-        """Best-effort read of LO tuning bounds from the ad9361-phy driver."""
+    @staticmethod
+    def _parse_range(raw: str) -> tuple[float, float] | None:
+        """Parse an libiio '[min step max]' availability string."""
+        nums = [float(x) for x in re.findall(r"-?[\d.]+", raw or "")]
+        return (nums[0], nums[-1]) if len(nums) >= 3 else None
+
+    def _chan_range(self, name: str, output: bool, attr: str):
         try:
-            phy = self._sdr._ctrl
-            # RX LO is altvoltage0, TX LO is altvoltage1 on ad9361-phy
-            ch = phy.find_channel("altvoltage1" if output else "altvoltage0", True)
-            raw = ch.attrs["frequency_available"].value
-            # formats seen in the wild: "[70000000 1 6000000000]"
-            nums = [float(x) for x in re.findall(r"[\d.]+", raw)]
-            if len(nums) >= 3:
-                return nums[0], nums[2]
-        except Exception:  # noqa: BLE001 - older firmware lacks the attr
+            ch = self._sdr._ctrl.find_channel(name, output)
+            return self._parse_range(ch.attrs[attr].value)
+        except Exception:  # noqa: BLE001 - older firmware may lack the attr
             return None
-        return None
 
     def _detect_capabilities(self) -> None:
+        """Read real limits from the driver rather than assuming a board.
+
+        The AD9363 in a stock Pluto is specified for 20 MHz of channel
+        bandwidth, but the driver reports what the part will actually accept
+        (56 MHz RX / 40 MHz TX on firmware v0.39). We trust the device and
+        note where that exceeds the datasheet, instead of hard-coding limits
+        that would refuse configurations the hardware supports.
+        """
         base = STOCK_PLUTO_CAPS
-        notes = []
-        rx_bounds = self._read_lo_bounds(output=False)
-        tx_bounds = self._read_lo_bounds(output=True)
-        if rx_bounds:
-            lo = max(70e6, min(rx_bounds[0], (tx_bounds or rx_bounds)[0]))
-            hi = min(6e9, max(rx_bounds[1], (tx_bounds or rx_bounds)[1]))
-            notes.append(f"LO bounds reported by driver: {lo:.4g}-{hi:.4g} Hz")
-            wide = hi > 4e9
-            self._caps = DeviceCapabilities(
-                min_frequency=lo, max_frequency=hi,
-                min_sample_rate=0.65e6, max_sample_rate=61.44e6,
-                max_bandwidth=56e6 if wide else 20e6,
-                rx_channels=base.rx_channels, tx_channels=base.tx_channels,
-                max_rx_gain_db=base.max_rx_gain_db,
-                min_tx_gain_db=base.min_tx_gain_db,
-                max_tx_gain_db=base.max_tx_gain_db,
-                transports=base.transports)
-            if wide:
-                notes.append("wide tuning range: AD9364-class (Pluto+ or "
-                             "expanded-range firmware)")
-        else:
+        notes: list[str] = []
+
+        lo_rx = self._chan_range("altvoltage0", True, "frequency_available")
+        lo_tx = self._chan_range("altvoltage1", True, "frequency_available")
+        rate = self._chan_range("voltage0", False, "sampling_frequency_available")
+        rx_bw = self._chan_range("voltage0", False, "rf_bandwidth_available")
+        tx_bw = self._chan_range("voltage0", True, "rf_bandwidth_available")
+        rx_gain = self._chan_range("voltage0", False, "hardwaregain_available")
+        tx_gain = self._chan_range("voltage0", True, "hardwaregain_available")
+
+        if not lo_rx:
             self._caps = base
-            notes.append("driver did not report LO bounds; assuming stock "
-                         "Pluto limits (325 MHz-3.8 GHz, 20 MHz bandwidth)")
+            self._detection_notes = [
+                "driver did not report tuning bounds; assuming stock Pluto "
+                "limits (325 MHz-3.8 GHz)"]
+            return
+
+        lo = min(lo_rx[0], (lo_tx or lo_rx)[0])
+        hi = max(lo_rx[1], (lo_tx or lo_rx)[1])
+        model = ""
+        try:
+            model = self._sdr._ctx.attrs.get("ad9361-phy,model", "")
+        except Exception:  # noqa: BLE001
+            pass
+
+        self._caps = DeviceCapabilities(
+            min_frequency=lo, max_frequency=hi,
+            min_sample_rate=(rate or (base.min_sample_rate,))[0],
+            max_sample_rate=(rate or (0, base.max_sample_rate))[1],
+            max_bandwidth=(rx_bw or (0, base.max_bandwidth))[1],
+            max_tx_bandwidth=(tx_bw[1] if tx_bw else None),
+            rx_channels=base.rx_channels, tx_channels=base.tx_channels,
+            max_rx_gain_db=(rx_gain or (0, base.max_rx_gain_db))[1],
+            min_tx_gain_db=(tx_gain or (base.min_tx_gain_db,))[0],
+            max_tx_gain_db=(tx_gain or (0, base.max_tx_gain_db))[1],
+            transports=base.transports)
+
+        caps = self._caps
+        notes.append(f"{model or 'transceiver'} reports tuning "
+                     f"{lo / 1e6:.0f}-{hi / 1e6:.0f} MHz, "
+                     f"RX bandwidth {caps.max_bandwidth / 1e6:.0f} MHz, "
+                     f"TX bandwidth {caps.tx_bandwidth / 1e6:.0f} MHz, "
+                     f"sample rate {caps.min_sample_rate / 1e6:.2f}-"
+                     f"{caps.max_sample_rate / 1e6:.2f} MSPS")
+        if model.startswith("ad9363") and caps.tx_bandwidth > 20e6:
+            notes.append(
+                "NOTE: the driver permits more bandwidth than the AD9363 is "
+                "specified for (20 MHz). Wider sweeps are accepted but "
+                "amplitude/phase flatness near the band edges is not "
+                "guaranteed — calibrate before trusting range accuracy.")
+        if hi <= 4e9:
+            notes.append(
+                "tuning stops at 3.8 GHz (AD9363 class). The documented "
+                "AD9364 compatibility change unlocks 70 MHz-6 GHz.")
         self._detection_notes = notes
 
     @property
@@ -150,7 +197,16 @@ class PlutoDevice(DeviceAdapter):
 
     # -- lifecycle -----------------------------------------------------------
     def connect(self) -> None:
-        self._sdr = adi.Pluto(uri=self.uri)
+        if self.connected and self._sdr is not None:
+            return          # idempotent: a radio's USB interface claims once
+        try:
+            self._sdr = adi.Pluto(uri=self.uri)
+        except Exception as exc:  # noqa: BLE001 - translate a vague driver error
+            raise RuntimeError(
+                f"could not open {self.uri}: {exc}. A Pluto's USB interface "
+                "can only be claimed by one handle at a time — check that no "
+                "other process (or another entry in this device list) already "
+                "holds this radio.") from exc
         self._detect_capabilities()
         # platform defaults target a wideband Pluto+; fit them to whatever this
         # device actually is before pushing values at the driver

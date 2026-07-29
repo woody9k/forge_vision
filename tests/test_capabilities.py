@@ -15,20 +15,26 @@ from forge_vision.waveforms import CATALOG
 
 
 def test_rev_b_profile_limits():
+    """Measured from real hardware (Rev.B, AD9363A, firmware v0.39): the
+    driver permits more bandwidth than the AD9363 datasheet specifies, and
+    transmit is narrower than receive."""
     dev = SimulatedPluto("sim-revb", caps_profile="pluto_rev_b")
     caps = dev.capabilities
     assert caps.max_frequency == PLUTO_REV_B_CAPS.max_frequency == 3.8e9
-    assert caps.max_bandwidth == 20e6
+    assert caps.max_bandwidth == 56e6        # RX
+    assert caps.tx_bandwidth == 40e6         # TX is narrower
+    assert caps.min_sample_rate == pytest.approx(2.083333e6)
     assert dev.kind == "simulated_pluto_rev_b"
 
 
-def test_defaults_are_clamped_to_narrowband_device():
-    """The 56 MHz default RX bandwidth must be fitted to a 20 MHz device."""
+def test_defaults_are_clamped_to_device_limits():
+    """Platform defaults must be fitted to whatever the device really is."""
     dev = SimulatedPluto("sim-revb", caps_profile="pluto_rev_b")
-    assert dev.config.rx_bandwidth_hz == 56e6      # platform default
-    cfg, notes = dev.clamp_config(DeviceConfig())
-    assert cfg.rx_bandwidth_hz == 20e6
-    assert any("rx bandwidth" in n for n in notes)
+    cfg, notes = dev.clamp_config(DeviceConfig(sample_rate_hz=0.5e6,
+                                               rx_bandwidth_hz=56e6))
+    assert cfg.sample_rate_hz == pytest.approx(2.083333e6)
+    assert cfg.rx_bandwidth_hz <= cfg.sample_rate_hz     # BW cannot exceed rate
+    assert any("sample rate" in n for n in notes)
     assert dev.validate_config(cfg) == []
 
 
@@ -51,7 +57,8 @@ def test_compatible_waveform_list():
     plus = SimulatedPluto("sim-plus")
     revb_ok = revb.compatible_waveforms(CATALOG)
     plus_ok = plus.compatible_waveforms(CATALOG)
-    assert "fmcw_bench_56M" not in revb_ok       # 56 MHz > 20 MHz limit
+    assert "fmcw_bench_56M" not in revb_ok       # 56 MHz > 40 MHz TX limit
+    assert "fmcw_pluto_40M" in revb_ok           # widest this board can send
     assert "fmcw_narrow_20M" in revb_ok
     assert "fmcw_bench_56M" in plus_ok
     # a receive-only waveform transmits nothing, so it is always available
@@ -63,7 +70,7 @@ def test_incompatible_waveform_refused_with_alternatives(armed_runtime):
     armed_runtime.set_caps_profile("sim-pluto-0", "pluto_rev_b")
     with pytest.raises(ValueError, match="not supported") as exc:
         armed_runtime.range_run("sim-pluto-0", waveform_name="fmcw_bench_56M")
-    assert "fmcw_narrow_20M" in str(exc.value)
+    assert "fmcw_pluto_40M" in str(exc.value)
     assert armed_runtime.device("sim-pluto-0").tx_enabled is False
 
 
@@ -131,5 +138,25 @@ def test_caps_profile_switch_clamps_live_config(armed_runtime):
                                             "rx_bandwidth_hz": 56e6})
     out = armed_runtime.set_caps_profile("sim-pluto-0", "pluto_rev_b")
     assert out["config"]["center_frequency_hz"] == 3.8e9
-    assert out["config"]["rx_bandwidth_hz"] == 20e6
     assert out["clamp_notes"]
+
+
+def test_connect_is_idempotent(runtime):
+    """Re-connecting an already-open radio must not try to claim its USB
+    interface a second time (which fails with a vague driver error)."""
+    dev = runtime.device("sim-pluto-0")
+    runtime.connect("sim-pluto-0")
+    assert dev.connected is True
+    runtime.connect("sim-pluto-0")          # must not raise
+    assert dev.connected is True
+
+
+def test_rescan_reports_already_present(runtime):
+    """A second rescan must not register the same radio twice."""
+    first = runtime.rescan_hardware()
+    if not first["driver"]["available"]:
+        pytest.skip("libiio not installed on this host")
+    second = runtime.rescan_hardware()
+    assert second["added"] == []
+    ids = [d for d in runtime.devices if d.startswith("pluto-")]
+    assert len(ids) == len(set(ids))

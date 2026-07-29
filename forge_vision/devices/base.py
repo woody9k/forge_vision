@@ -22,16 +22,24 @@ class DeviceCapabilities:
     max_frequency: float
     min_sample_rate: float
     max_sample_rate: float
-    max_bandwidth: float
+    max_bandwidth: float                    # receive analog bandwidth
     rx_channels: int = 1
     tx_channels: int = 1
     max_rx_gain_db: float = 70.0
     min_tx_gain_db: float = -89.0
     max_tx_gain_db: float = 0.0
     transports: tuple = ("usb",)
+    # transmit bandwidth is often narrower than receive (an AD9363 Pluto
+    # reports 56 MHz RX but only 40 MHz TX); None means "same as RX"
+    max_tx_bandwidth: float | None = None
+
+    @property
+    def tx_bandwidth(self) -> float:
+        return (self.max_tx_bandwidth if self.max_tx_bandwidth is not None
+                else self.max_bandwidth)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return {**asdict(self), "tx_bandwidth": self.tx_bandwidth}
 
 
 @dataclass
