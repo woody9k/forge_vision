@@ -39,6 +39,7 @@ document.querySelectorAll("nav button").forEach((b) => {
     if (b.dataset.tab === "safety") refreshSafety();
     if (b.dataset.tab === "dashboard") refreshStatus();
     if (b.dataset.tab === "antenna") refreshComponents();
+    if (b.dataset.tab === "world") refreshSites();
   };
 });
 
@@ -789,6 +790,272 @@ function drawSurvey(r) {
   ctx.fillText("bars = peak above floor (amber = occupied) · line = noise floor",
                mL + 8, mT + 12);
 }
+
+/* ---------- World View (release 0.4) ---------- */
+let SCENE = null;
+let selectedFinding = null;
+
+async function refreshSites() {
+  const sites = await api("/api/sites");
+  const sel = $("site-select");
+  const cur = sel.value;
+  sel.innerHTML = sites.map((s) =>
+    `<option value="${esc(s.site_id)}">${esc(s.name)} (${s.num_scans} scans)</option>`).join("");
+  if (sites.some((s) => s.site_id === cur)) sel.value = cur;
+  const scans = await api("/api/experiments?kind=scan");
+  $("site-scan").innerHTML = scans.map((e) =>
+    `<option value="${esc(e.experiment_id)}">${esc(e.name)} — ${esc(e.experiment_id)}</option>`).join("")
+    || '<option value="">no finalized scans</option>';
+  if (sites.length) buildScene();
+}
+
+$("site-add").onclick = async () => {
+  const name = $("site-name").value.trim();
+  if (!name) { alert("name the site"); return; }
+  const s = await api("/api/sites", { method: "POST", body: { name } });
+  $("site-name").value = "";
+  await refreshSites();
+  $("site-select").value = s.site_id;
+};
+
+$("reg-add").onclick = async () => {
+  const sid = $("site-select").value, exp = $("site-scan").value;
+  if (!sid || !exp) { alert("pick a site and a finalized scan"); return; }
+  try {
+    await api(`/api/sites/${sid}/register`, { method: "POST", body: {
+      experiment_id: exp,
+      origin_x_m: parseFloat($("reg-x").value) || 0,
+      origin_y_m: parseFloat($("reg-y").value) || 0,
+      heading_deg: parseFloat($("reg-h").value) || 0,
+      label: $("reg-label").value.trim(),
+    }});
+    $("reg-label").value = "";
+    await refreshSites();
+  } catch (e) { $("site-status").textContent = e.message; }
+};
+
+$("site-refresh").onclick = buildScene;
+$("slice-on").onchange = buildScene;
+
+async function buildScene() {
+  const sid = $("site-select").value;
+  if (!sid) return;
+  $("site-status").textContent = "building scene…";
+  let url = `/api/sites/${sid}/scene?tolerance_m=${$("site-tol").value}`;
+  if ($("slice-on").checked) url += `&slice_depth_m=${$("slice-depth").value}`;
+  try {
+    SCENE = await api(url);
+    const confirmed = SCENE.findings.filter((f) => f.supporting_scans >= 2).length;
+    $("site-status").textContent =
+      `${SCENE.scans.length} scan(s) · ${SCENE.findings.length} finding(s), ` +
+      `${confirmed} confirmed by 2+ scans` +
+      (SCENE.errors.length ? ` · ${SCENE.errors.length} scan(s) skipped` : "");
+    $("world-meta").textContent = " — " + SCENE.site.coordinate_system;
+    const ms = $("mig-select");
+    ms.innerHTML = SCENE.scans.map((s) =>
+      `<option value="${esc(s.experiment_id)}">${esc(s.placement.label)}</option>`).join("");
+    drawWorld();
+    renderFindings();
+    drawMigrated();
+    if (SCENE.errors.length) {
+      $("finding-detail").textContent =
+        "Skipped scans:\n" + SCENE.errors.map((e) => ` ${e.experiment_id}: ${e.error}`).join("\n");
+    }
+  } catch (e) { $("site-status").textContent = "failed: " + e.message; }
+}
+$("mig-select").onchange = drawMigrated;
+$("mig-gain").onchange = drawMigrated;
+
+function worldBounds() {
+  const xs = [], ys = [];
+  SCENE.scans.forEach((s) => s.path.forEach((p) => { xs.push(p[0]); ys.push(p[1]); }));
+  SCENE.findings.forEach((f) => { xs.push(f.site_x_m); ys.push(f.site_y_m); });
+  if (!xs.length) { xs.push(0, 1); ys.push(0, 1); }
+  const pad = 0.6;
+  return { x0: Math.min(...xs) - pad, x1: Math.max(...xs) + pad,
+           y0: Math.min(...ys) - pad, y1: Math.max(...ys) + pad };
+}
+
+function drawWorld() {
+  const cv = $("world-map"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#0a0d11"; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!SCENE) return;
+  const b = worldBounds();
+  const m = 40;
+  const span = Math.max(b.x1 - b.x0, b.y1 - b.y0);   // keep aspect square
+  const X = (x) => m + ((x - b.x0) / span) * (cv.width - 2 * m);
+  const Y = (y) => cv.height - m - ((y - b.y0) / span) * (cv.height - 2 * m);
+
+  // grid + axes
+  ctx.strokeStyle = "#161d29"; ctx.lineWidth = 1;
+  for (let g = 0; g <= 8; g++) {
+    const gx = m + (g / 8) * (cv.width - 2 * m);
+    const gy = m + (g / 8) * (cv.height - 2 * m);
+    ctx.beginPath(); ctx.moveTo(gx, m); ctx.lineTo(gx, cv.height - m); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(m, gy); ctx.lineTo(cv.width - m, gy); ctx.stroke();
+  }
+  ctx.fillStyle = "#7d8ba0"; ctx.font = "11px monospace";
+  ctx.fillText(`${b.x0.toFixed(1)} m`, m - 12, cv.height - m + 16);
+  ctx.fillText(`${(b.x0 + span).toFixed(1)} m`, cv.width - m - 24, cv.height - m + 16);
+  ctx.fillText(`${b.y0.toFixed(1)} m`, 4, cv.height - m + 4);
+  ctx.fillText(`${(b.y0 + span).toFixed(1)} m`, 4, m + 4);
+
+  // depth-slice samples (measured paths only)
+  if (SCENE.depth_slice) {
+    const s = SCENE.depth_slice.samples;
+    const vals = s.map((p) => p.amplitude_db);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    s.forEach((p) => {
+      const [r, g, bl] = viridis((p.amplitude_db - lo) / (hi - lo + 1e-9));
+      ctx.fillStyle = `rgb(${r},${g},${bl})`;
+      ctx.beginPath(); ctx.arc(X(p.x_m), Y(p.y_m), 4, 0, 7); ctx.fill();
+    });
+  }
+
+  // scan paths — direct measurement, drawn solid (UX-WLD-005)
+  SCENE.scans.forEach((s, i) => {
+    if (s.path.length < 2) return;
+    ctx.strokeStyle = "#4aa3ff"; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(X(s.path[0][0]), Y(s.path[0][1]));
+    ctx.lineTo(X(s.path[1][0]), Y(s.path[1][1]));
+    ctx.stroke();
+    ctx.fillStyle = "#8db8e8"; ctx.font = "11px monospace";
+    ctx.fillText(s.placement.label, X(s.path[1][0]) + 6, Y(s.path[1][1]) - 4);
+  });
+
+  // findings — algorithmic inference, drawn as rings (UX-WLD-005)
+  SCENE.findings.forEach((f, i) => {
+    const confirmed = f.supporting_scans >= 2;
+    const sel = selectedFinding === i;
+    ctx.strokeStyle = confirmed ? "#35c4a2" : "#e0a52e";
+    ctx.fillStyle = confirmed ? "rgba(53,196,162,0.35)" : "rgba(224,165,46,0.12)";
+    ctx.lineWidth = sel ? 3.5 : 2;
+    ctx.beginPath();
+    ctx.arc(X(f.site_x_m), Y(f.site_y_m), 11, 0, 7);
+    ctx.fill(); ctx.stroke();
+    // positional spread across supporting scans = visible uncertainty
+    if (f.position_spread_m > 0) {
+      const rpx = Math.abs(X(b.x0 + f.position_spread_m) - X(b.x0));
+      ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(X(f.site_x_m), Y(f.site_y_m), Math.max(rpx, 12), 0, 7);
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.fillStyle = "#d7e0ea"; ctx.font = "bold 11px monospace";
+    ctx.fillText(String(i + 1), X(f.site_x_m) - 3, Y(f.site_y_m) + 4);
+  });
+}
+
+$("world-map").onclick = (ev) => {
+  if (!SCENE || !SCENE.findings.length) return;
+  const cv = $("world-map"), rect = cv.getBoundingClientRect();
+  const px = (ev.clientX - rect.left) * (cv.width / rect.width);
+  const py = (ev.clientY - rect.top) * (cv.height / rect.height);
+  const b = worldBounds(), m = 40;
+  const span = Math.max(b.x1 - b.x0, b.y1 - b.y0);
+  const X = (x) => m + ((x - b.x0) / span) * (cv.width - 2 * m);
+  const Y = (y) => cv.height - m - ((y - b.y0) / span) * (cv.height - 2 * m);
+  let best = null, bd = 20;
+  SCENE.findings.forEach((f, i) => {
+    const d = Math.hypot(X(f.site_x_m) - px, Y(f.site_y_m) - py);
+    if (d < bd) { bd = d; best = i; }
+  });
+  if (best !== null) selectFinding(best);
+};
+
+function renderFindings() {
+  $("findings-list").innerHTML = SCENE.findings.map((f, i) => `
+    <div class="expitem ${selectedFinding === i ? "sel" : ""}"
+         onclick="selectFinding(${i})">
+      <div><b>#${i + 1}</b> (${f.site_x_m.toFixed(2)}, ${f.site_y_m.toFixed(2)}) m
+        · depth ${f.depth_m.toFixed(2)} m
+        <span class="mut">[${f.depth_interval_m[0].toFixed(2)}–${f.depth_interval_m[1].toFixed(2)}]</span><br>
+        <span class="mut">${esc(f.classification)}</span></div>
+      <div><span class="tag" style="${f.supporting_scans >= 2
+        ? "background:#12241d;color:#86dfc0" : ""}">${f.supporting_scans} scan${f.supporting_scans > 1 ? "s" : ""}</span>
+        <span class="tag">${esc(f.confidence.overall)}</span></div>
+    </div>`).join("") || '<span class="mut">no findings — register scans and build the scene</span>';
+}
+
+window.selectFinding = (i) => {
+  selectedFinding = i;
+  const f = SCENE.findings[i];
+  $("finding-detail").textContent = JSON.stringify({
+    position: { x_m: f.site_x_m, y_m: f.site_y_m,
+                spread_m: f.position_spread_m },
+    depth_m: f.depth_m, depth_interval_m: f.depth_interval_m,
+    supporting_scans: f.supporting_scans,
+    confidence: f.confidence,
+    epistemic: f.epistemic,
+    evidence: f.evidence,
+  }, null, 1);
+  renderFindings();
+  drawWorld();
+};
+
+function drawMigrated() {
+  const cv = $("mig-plot"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#0a0d11"; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (!SCENE) return;
+  const mig = SCENE.migrated[$("mig-select").value];
+  if (!mig) return;
+  const cols = mig.positions_m.length, rows = mig.depths_m.length;
+  const mL = 52, mB = 26;
+  const cw = (cv.width - mL) / cols, ch = (cv.height - mB) / rows;
+
+  // Migrated amplitude falls off steeply with depth, so a fixed colour scale
+  // shows a bright shallow wash and nothing else. Depth gain re-expresses each
+  // cell as its contrast against the mean response at the same depth, which is
+  // what makes a focused target visible. Display only — the stored data and
+  // every reported number are unaffected.
+  const gain = $("mig-gain").checked;
+  const rowMean = [];
+  for (let j = 0; j < rows; j++) {
+    let s = 0;
+    for (let i = 0; i < cols; i++) s += mig.amplitude_db[i][j];
+    rowMean.push(s / cols);
+  }
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      const raw = mig.amplitude_db[i][j];
+      const v = gain ? (raw - rowMean[j]) / 12 : (raw + 18) / 18;
+      const [r, g, b] = viridis(v);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(mL + i * cw, j * ch, Math.ceil(cw), Math.ceil(ch));
+    }
+  }
+  ctx.fillStyle = "#7d8ba0"; ctx.font = "11px monospace";
+  for (let g = 0; g <= 5; g++) {
+    const d = mig.depths_m[Math.floor((rows - 1) * g / 5)];
+    ctx.fillText(d.toFixed(1) + " m", 4, (g / 5) * (cv.height - mB - 8) + 12);
+  }
+  for (let g = 0; g <= 6; g++) {
+    const p = mig.positions_m[Math.floor((cols - 1) * g / 6)];
+    ctx.fillText(p.toFixed(1) + " m", mL + (g / 6) * (cv.width - mL - 40), cv.height - 6);
+  }
+  $("mig-meta").innerHTML =
+    ` — diffraction-stack, aperture ${mig.aperture_m.toFixed(1)} m, ` +
+    `${mig.measured_columns} measured columns, ` +
+    `supported to ${mig.max_supported_depth_m} m` +
+    (mig.depth_focus_warning
+      ? `<br><span style="color:#e8c96a">⚠ ${esc(mig.depth_focus_warning)}</span>`
+      : "");
+}
+
+$("site-report").onclick = async () => {
+  const sid = $("site-select").value;
+  if (!sid) return;
+  try {
+    const r = await api(`/api/sites/${sid}/report`);
+    const blob = new Blob([r.markdown], { type: "text/markdown" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `forge-vision-site-${sid}.md`;
+    a.click();
+    $("finding-detail").textContent = r.markdown;
+    $("site-status").textContent = "report exported";
+  } catch (e) { $("site-status").textContent = "report failed: " + e.message; }
+};
 
 /* ---------- Antenna Lab ---------- */
 let selectedComp = null;

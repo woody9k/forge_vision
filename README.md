@@ -42,7 +42,13 @@ Open http://127.0.0.1:8347/ and:
    FR-RFC-003), and get S11/VSWR plots with recommended / marginal /
    unsuitable band ratings (FR-RFC-004). Pin one component to overlay a
    second trace for comparison.
-7. **Experiments** → every run is a self-contained package: browse, search,
+7. **World View** → create a site, register finalized scans into it with an
+   origin and heading, and build the scene. Each B-scan is focused by
+   diffraction-stack migration, focused responses are transformed into site
+   coordinates, and responses that recur across scans fuse into findings with
+   persistence and confidence. Click a finding to reach its contributing
+   scans; export a Markdown site report following the spec's Appendix B.
+8. **Experiments** → every run is a self-contained package: browse, search,
    verify checksums, export/import as zip, annotate, and **Replay** — reprocess
    the stored raw I/Q with new parameters, no hardware needed.
 
@@ -87,6 +93,11 @@ forge_vision/
     peaks.py         peaks with measured-vs-derived separation + uncertainty
   imaging/bscan.py   B-scan assembly, quality layer, mean-trace clutter
                      removal, marked interpolation, resume state
+  imaging/migration.py  diffraction-stack focusing with fold limiting and a
+                     depth-focus warning when geometry cannot resolve depth
+  sites.py           site model, scan registration, cross-scan fusion into
+                     world coordinates, depth slices
+  reports.py         Markdown site report (Appendix B outline)
   experiments/store.py  self-contained packages: raw npy + JSON manifests,
                      checksums, lineage, annotations, export/import
   server/

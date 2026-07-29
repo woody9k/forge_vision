@@ -14,6 +14,7 @@
     <button data-tab="live">Live RF</button>
     <button data-tab="range">Range Lab</button>
     <button data-tab="scan">Scan Studio</button>
+    <button data-tab="world">World View</button>
     <button data-tab="antenna">Antenna Lab</button>
     <button data-tab="library">Experiments</button>
     <button data-tab="safety">Safety</button>
@@ -171,6 +172,58 @@
         <button id="ann-add">Add annotation</button>
       </div>
       <div id="ann-list"></div>
+    </div>
+  </section>
+
+  <!-- ============ WORLD VIEW ============ -->
+  <section id="tab-world" class="tab">
+    <div class="toolbar">
+      <label>Site <select id="site-select"></select></label>
+      <input id="site-name" type="text" size="18" placeholder="new site name…">
+      <button id="site-add">Create site</button>
+      <label>Cluster tol (m) <input id="site-tol" type="number" value="0.6" step="0.1"></label>
+      <button id="site-refresh" class="primary">Build scene</button>
+      <button id="site-report">Export report</button>
+      <span id="site-status" class="mut"></span>
+    </div>
+    <div class="toolbar">
+      <label>Register scan <select id="site-scan"></select></label>
+      <label>origin x <input id="reg-x" type="number" value="0" step="0.1" style="width:70px"></label>
+      <label>y <input id="reg-y" type="number" value="0" step="0.1" style="width:70px"></label>
+      <label>heading° <input id="reg-h" type="number" value="0" step="15" style="width:70px"></label>
+      <label>label <input id="reg-label" type="text" size="12"></label>
+      <button id="reg-add">Register</button>
+      <label><input type="checkbox" id="slice-on"> depth slice at
+        <input id="slice-depth" type="number" value="1.0" step="0.1" style="width:70px"> m</label>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h2>Plan view <span class="mut" id="world-meta"></span></h2>
+        <canvas id="world-map" width="640" height="520"></canvas>
+        <div class="mut" style="margin-top:6px">
+          Lines = measured scan paths · circles = fused anomalies
+          (filled = confirmed by 2+ scans) · dots = depth-slice samples.
+          Space between lines is unmeasured, not empty.
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Findings</h2>
+        <div id="findings-list"></div>
+        <h2 style="margin-top:14px">Evidence</h2>
+        <pre id="finding-detail" class="mono">select a finding</pre>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Migrated section <span class="mut" id="mig-meta">— focused B-scan for the selected scan</span></h2>
+      <div class="toolbar">
+        <label>Scan <select id="mig-select"></select></label>
+        <label><input type="checkbox" id="mig-gain"> depth gain
+          <span class="mut">(display only — contrast against the average at
+          each depth. Reveals weak deep structure, but also amplifies noise
+          where few traces support the image; the default absolute scale is
+          relative to the strongest focused response.)</span></label>
+      </div>
+      <canvas id="mig-plot" width="1280" height="300"></canvas>
     </div>
   </section>
 
