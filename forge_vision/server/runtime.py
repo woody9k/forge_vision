@@ -22,8 +22,11 @@ from ..dsp import stages as _stages  # noqa: F401  (registers stages)
 from ..dsp.pipeline import Pipeline, PipelineContext
 from ..experiments.store import ExperimentStore
 from ..imaging.bscan import BScanBuilder
+from ..imaging.migration import focused_targets, migrate_bscan
+from ..reports import site_report
 from ..rfcomponents.store import ComponentStore
 from ..safety import SafetyController
+from ..sites import SiteStore, depth_slice, fuse_targets, scan_path
 from ..waveforms import CATALOG
 
 
@@ -74,6 +77,7 @@ class Runtime:
         os.makedirs(self.data_dir, exist_ok=True)
         self.store = ExperimentStore(os.path.join(self.data_dir, "experiments"))
         self.components = ComponentStore(os.path.join(self.data_dir, "components"))
+        self.sites = SiteStore(os.path.join(self.data_dir, "sites"))
         self.safety = SafetyController(
             SafetyLimits(), os.path.join(self.data_dir, "logs", "safety_audit.jsonl"))
         self.devices: dict[str, object] = {}
@@ -576,6 +580,71 @@ class Runtime:
         self.store.finalize(exp_id)
         return {"experiment_id": exp_id, "segments": entries,
                 "bytes_estimate": bytes_needed}
+
+    # -- Scene Builder / World View (release 0.4) ----------------------------
+    def _scan_result(self, placement: dict, migration_params: dict | None = None,
+                     detect_params: dict | None = None) -> dict:
+        """Load a registered scan, migrate it, and extract focused targets."""
+        exp_id = placement["experiment_id"]
+        manifest = self.store.load(exp_id)
+        try:
+            bscan = self.store.load_derived(exp_id, "bscan")["product"]
+        except FileNotFoundError as exc:
+            raise ValueError(
+                f"{exp_id} has no finalized B-scan; finalize the scan in Scan "
+                "Studio before registering it to a site") from exc
+        medium = manifest.get("calibration", {}).get("propagation_model", {})
+        migrated = migrate_bscan(
+            bscan["positions_m"], bscan["ranges_m"], bscan["magnitude_db"],
+            **(migration_params or {}))
+        targets = focused_targets(migrated, **(detect_params or {}))
+        return {
+            "experiment_id": exp_id,
+            "placement": placement,
+            "medium": medium,
+            "migrated": migrated,
+            "targets": targets,
+            "measured_columns": migrated["measured_columns"],
+            "path": scan_path(placement, bscan["positions_m"]),
+            "name": manifest["identity"]["name"],
+        }
+
+    def site_scene(self, site_id: str, tolerance_m: float = 0.6,
+                   slice_depth_m: float | None = None,
+                   migration_params: dict | None = None,
+                   detect_params: dict | None = None) -> dict:
+        """Build the fused world view for a site (Milestone D)."""
+        site = self.sites.load(site_id)
+        results, errors = [], []
+        for placement in site["scans"]:
+            try:
+                results.append(self._scan_result(placement, migration_params,
+                                                 detect_params))
+            except Exception as exc:  # noqa: BLE001 - report per-scan failures
+                errors.append({"experiment_id": placement["experiment_id"],
+                               "error": str(exc)})
+        findings = fuse_targets(results, tolerance_m=tolerance_m)
+        slice_out = None
+        if slice_depth_m is not None:
+            slice_out = depth_slice(results, float(slice_depth_m))
+        return {
+            "site": site,
+            "scans": [{k: v for k, v in r.items() if k != "migrated"}
+                      for r in results],
+            "migrated": {r["experiment_id"]: r["migrated"] for r in results},
+            "findings": findings,
+            "depth_slice": slice_out,
+            "errors": errors,
+        }
+
+    def site_report(self, site_id: str, tolerance_m: float = 0.6) -> dict:
+        scene = self.site_scene(site_id, tolerance_m=tolerance_m)
+        results = [{**s, "migrated": scene["migrated"].get(s["experiment_id"])}
+                   for s in scene["scans"]]
+        text = site_report(scene["site"], results, scene["findings"],
+                           __import__("forge_vision").__version__)
+        return {"site_id": site_id, "markdown": text,
+                "findings": scene["findings"], "errors": scene["errors"]}
 
     # -- band survey (receive only) ------------------------------------------
     def band_survey(self, device_id: str, start_hz: float, stop_hz: float,
