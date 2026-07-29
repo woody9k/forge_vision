@@ -406,7 +406,48 @@ def sage_ask(body: dict = Body(...)):
     try:
         return runtime.sage_ask(body.get("question", ""),
                                 site_id=body.get("site_id", ""),
-                                experiment_id=body.get("experiment_id", ""))
+                                experiment_id=body.get("experiment_id", ""),
+                                narrate=bool(body.get("narrate", False)))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/sage/narrate")
+def sage_narrate(body: dict = Body(...)):
+    """Second phase: narrate an answer the client already has. Kept separate
+    so a slow local model never delays the instrument's own findings."""
+    try:
+        return runtime.sage_narrate(body)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+# -- optional LLM narration endpoints ------------------------------------
+@app.get("/api/llm")
+def llm_list():
+    return runtime.llm_list()
+
+
+@app.post("/api/llm")
+def llm_put(body: dict = Body(...)):
+    try:
+        return runtime.llm_put(body)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/llm/{name}/delete")
+def llm_remove(name: str):
+    try:
+        return runtime.llm_remove(name)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/llm/{name}/health")
+def llm_health(name: str):
+    try:
+        return runtime.llm_health(name)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 

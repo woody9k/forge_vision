@@ -53,6 +53,10 @@ Open http://127.0.0.1:8347/ and:
    should I measure next?* Every statement carries an epistemic label
    (observation / calculation / inference / hypothesis / unknown) and links to
    the artifacts behind it. It is read-only and cannot transmit.
+   Optionally point it at any OpenAI-compatible local model (Ollama, LM
+   Studio, vLLM, llama.cpp) for plain-prose narration *over* those findings —
+   every figure in the prose is checked against the measurements, and
+   narration that invents one is withheld. Findings never wait on the model.
 9. **Experiments** → every run is a self-contained package: browse, search,
    verify checksums, export/import as zip, annotate, and **Replay** — reprocess
    the stored raw I/Q with new parameters, no hardware needed.
@@ -109,6 +113,8 @@ forge_vision/
     analysis.py      quality assessment, experiment summary, finding
                      explanation, comparison, next-measurement recommendation
     query.py         deterministic grounded query parser (offline by design)
+    narrate.py       optional OpenAI-compatible narration with groundedness
+                     verification; degrades to the facts on any failure
   experiments/store.py  self-contained packages: raw npy + JSON manifests,
                      checksums, lineage, annotations, export/import
   server/

@@ -247,6 +247,23 @@
       <div id="sage-suggest"></div>
     </div>
     <div class="panel">
+      <h2>Language model <span class="mut">— optional narration over the
+        findings. The instrument's answers do not depend on it.</span></h2>
+      <div class="toolbar">
+        <input id="llm-name" type="text" size="10" placeholder="name">
+        <input id="llm-url" type="text" size="30"
+               placeholder="http://192.168.99.173:1234/v1">
+        <input id="llm-key" type="password" size="12" placeholder="api key (optional)">
+        <button id="llm-probe">Probe</button>
+        <label>Model <select id="llm-model"><option value="">—</option></select></label>
+        <label>Max tokens <input id="llm-maxtok" type="number" value="700" step="100" style="width:80px"></label>
+        <label><input type="checkbox" id="llm-enabled"> use for narration</label>
+        <button id="llm-save" class="primary">Save</button>
+      </div>
+      <div id="llm-status" class="mut"></div>
+      <div id="llm-list"></div>
+    </div>
+    <div class="panel">
       <h2>Answer <span class="mut" id="sage-meta"></span></h2>
       <div id="sage-answer">
         <p class="mut">SAGE answers only from stored measurements. Every

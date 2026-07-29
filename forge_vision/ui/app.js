@@ -985,7 +985,8 @@ window.explainFinding = async (i) => {
   await refreshSage();
   $("sage-site").value = sid;
   $("sage-q").value = `Why is finding ${i + 1} highlighted?`;
-  renderAnswer(await api(`/api/sage/site/${sid}/finding/${i}`));
+  const r = await api(`/api/sage/site/${sid}/finding/${i}`);
+  renderAnswer(r); narrateLater(r);
 };
 
 window.selectFinding = (i) => {
@@ -1108,6 +1109,7 @@ async function refreshSage() {
     .join("");
   if (exps.some((e) => e.experiment_id === ecur)) es.value = ecur;
 
+  refreshLlm();
   $("sage-suggest").innerHTML = SUGGESTED.map((q) =>
     `<button style="margin:0 6px 6px 0" onclick="sageAsk(${JSON.stringify(q).replace(/"/g, "&quot;")})">${esc(q)}</button>`).join("");
 }
@@ -1128,6 +1130,7 @@ async function doAsk(question) {
       question, site_id: $("sage-site").value,
       experiment_id: $("sage-exp").value } });
     renderAnswer(r);
+    narrateLater(r);
     $("sage-status").textContent = "";
   } catch (e) { $("sage-status").textContent = "failed: " + e.message; }
 }
@@ -1135,13 +1138,117 @@ async function doAsk(question) {
 $("sage-quality").onclick = async () => {
   const id = $("sage-exp").value;
   if (!id) { alert("select an experiment"); return; }
-  renderAnswer(await api(`/api/sage/experiment/${id}`));
+  const r = await api(`/api/sage/experiment/${id}`);
+  renderAnswer(r); narrateLater(r);
 };
 $("sage-next").onclick = async () => {
   const id = $("sage-site").value;
   if (!id) { alert("select a site"); return; }
-  renderAnswer(await api(`/api/sage/site/${id}/recommend`));
+  const r = await api(`/api/sage/site/${id}/recommend`);
+  renderAnswer(r); narrateLater(r);
 };
+
+/* --- LLM endpoint configuration --- */
+async function refreshLlm() {
+  const r = await api("/api/llm");
+  const h = r.health[r.active];
+  $("llm-list").innerHTML = r.endpoints.map((e) => `
+    <div class="expitem">
+      <div><b>${esc(e.name)}</b> ${e.enabled
+        ? '<span class="tag" style="background:#12241d;color:#86dfc0">active</span>' : ""}
+        <br><span class="mut">${esc(e.base_url)} · ${esc(e.model || "no model")}
+        · ${e.max_tokens} max tokens · ${e.timeout_s}s timeout</span></div>
+      <div><button onclick="llmProbeNamed('${esc(e.name)}')">Health</button>
+        <button onclick="llmDelete('${esc(e.name)}')">Delete</button></div>
+    </div>`).join("") || '<span class="mut">no endpoints configured — narration off</span>';
+  if (h) {
+    $("llm-status").textContent = h.reachable
+      ? `active endpoint reachable in ${h.latency_s}s · models: ${h.models.join(", ")}`
+      : `active endpoint unreachable: ${h.error}`;
+  }
+}
+
+$("llm-probe").onclick = async () => {
+  const url = $("llm-url").value.trim();
+  if (!url) { alert("enter a base URL ending in /v1"); return; }
+  $("llm-status").textContent = "probing…";
+  try {
+    await api("/api/llm", { method: "POST", body: {
+      name: $("llm-name").value.trim() || "probe", base_url: url,
+      api_key: $("llm-key").value, enabled: false } });
+    const h = await api(`/api/llm/${$("llm-name").value.trim() || "probe"}/health`);
+    $("llm-model").innerHTML = h.models.map((m) => `<option>${esc(m)}</option>`).join("")
+      || '<option value="">no models</option>';
+    $("llm-status").textContent = h.reachable
+      ? `reachable in ${h.latency_s}s · ${h.models.length} model(s)`
+      : `unreachable: ${h.error}`;
+    refreshLlm();
+  } catch (e) { $("llm-status").textContent = "probe failed: " + e.message; }
+};
+
+$("llm-save").onclick = async () => {
+  try {
+    await api("/api/llm", { method: "POST", body: {
+      name: $("llm-name").value.trim() || "local",
+      base_url: $("llm-url").value.trim(),
+      model: $("llm-model").value,
+      api_key: $("llm-key").value,
+      max_tokens: parseInt($("llm-maxtok").value, 10) || 700,
+      enabled: $("llm-enabled").checked } });
+    $("llm-status").textContent = "saved";
+    refreshLlm();
+  } catch (e) { $("llm-status").textContent = "save failed: " + e.message; }
+};
+
+window.llmProbeNamed = async (name) => {
+  const h = await api(`/api/llm/${name}/health`);
+  $("llm-status").textContent = h.reachable
+    ? `${name}: reachable in ${h.latency_s}s · models: ${h.models.join(", ")}`
+    : `${name}: unreachable — ${h.error}`;
+};
+window.llmDelete = async (name) => {
+  await api(`/api/llm/${name}/delete`, { method: "POST" });
+  refreshLlm();
+};
+
+function renderNarration(n) {
+  if (!n) return "";
+  if (!n.available) {
+    return `<div class="alert warn"><b>Narration unavailable.</b>
+      ${esc(n.error || "")} ${esc(n.note || "")}</div>`;
+  }
+  if (!n.grounded) {
+    return `<div class="alert err"><b>Narration withheld.</b> ${esc(n.note)}
+      <details style="margin-top:6px"><summary class="mut">show what the model
+      wrote (not an instrument output)</summary>
+      <div style="margin-top:6px;opacity:.75">${esc(n.withheld_text)}</div>
+      </details></div>`;
+  }
+  return `<div class="panel" style="background:#101820;border-color:#1f4a38">
+      <div style="margin-bottom:6px">
+        <span class="tag" style="background:#12241d;color:#86dfc0">narration</span>
+        <span class="mut">${esc(n.model)} via ${esc(n.endpoint)} ·
+        ${n.latency_s}s · every figure checked against the findings below</span>
+      </div>
+      <div>${esc(n.text)}</div></div>`;
+}
+
+// Findings render immediately; narration arrives later. A local model can
+// take a minute or more, and the instrument must not appear to hang on it.
+async function narrateLater(r) {
+  if (!r.narration_available || !r.facts || !r.facts.length) return;
+  const slot = $("sage-narration");
+  if (!slot) return;
+  slot.innerHTML = '<div class="alert warn">Narrating with the local model… '
+    + 'the findings below are already complete and will not change.</div>';
+  try {
+    const n = await api("/api/sage/narrate", { method: "POST", body: r });
+    slot.innerHTML = renderNarration(n);
+  } catch (e) {
+    slot.innerHTML = `<div class="alert warn">Narration failed: ${esc(e.message)}
+      — the findings below are unaffected.</div>`;
+  }
+}
 
 function renderAnswer(r) {
   const sev = { critical: "#e0492e", warn: "#e0a52e", info: "#263042" };
@@ -1155,7 +1262,9 @@ function renderAnswer(r) {
     ` — ${r.facts.length} statement(s), ${r.evidence_count} evidence link(s)` +
     (r.question ? ` · “${r.question}”` : "");
   const note = r.note ? `<div class="alert warn">${esc(r.note)}</div>` : "";
-  $("sage-answer").innerHTML = note + (r.facts.map((f) => `
+  $("sage-answer").innerHTML = note + '<div id="sage-narration"></div>'
+    + renderNarration(r.narration)
+    + (r.facts.map((f) => `
     <div class="panel" style="border-left:3px solid ${sev[f.severity] || sev.info};
          background:var(--panel2); margin-bottom:9px">
       <div style="margin-bottom:6px">
