@@ -99,3 +99,44 @@ def test_invalid_config_rejected(armed_runtime):
         armed_runtime.configure("sim-pluto-0", {"center_frequency_hz": 10e9})
     with pytest.raises(ConfigurationError):
         armed_runtime.configure("sim-pluto-0", {"sample_rate_hz": 100e6})
+
+
+def test_checklist_gates_arming(runtime):
+    """FR-SAF-009: required pre-transmit checks must be confirmed first."""
+    runtime.connect("sim-pluto-0")
+    with pytest.raises(SafetyViolation, match="checklist incomplete"):
+        runtime.safety.arm("op", "ack")
+    assert runtime.safety.status()["armed"] is False
+
+    status = runtime.safety.checklist_status()
+    assert status["complete"] is False
+    for item in runtime.safety.checklist:
+        if item["required"]:
+            status = runtime.safety.confirm_checklist_item(item["id"])
+    assert status["complete"] is True
+
+    runtime.safety.arm("op", "ack")          # now permitted
+    assert runtime.safety.status()["armed"] is True
+
+
+def test_advisory_items_do_not_block(runtime):
+    runtime.connect("sim-pluto-0")
+    for item in runtime.safety.checklist:
+        if item["required"]:
+            runtime.safety.confirm_checklist_item(item["id"])
+    advisory = [i for i in runtime.safety.checklist if not i["required"]]
+    assert advisory and all(not i["confirmed"] for i in advisory)
+    runtime.safety.arm("op", "ack")          # advisory items still unconfirmed
+    assert runtime.safety.status()["armed"] is True
+
+
+def test_checklist_reset_and_audit(armed_runtime):
+    status = armed_runtime.safety.reset_checklist()
+    assert status["complete"] is False
+    events = [e["event"] for e in armed_runtime.safety.audit_tail()]
+    assert "checklist_item" in events and "checklist_reset" in events
+
+
+def test_unknown_checklist_item(runtime):
+    with pytest.raises(KeyError):
+        runtime.safety.confirm_checklist_item("no_such_item")

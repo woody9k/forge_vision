@@ -76,6 +76,19 @@
     </div>
     <div class="panel"><h2>Waterfall</h2><canvas id="waterfall" width="1280" height="260"></canvas></div>
     <div class="panel"><h2>Telemetry &amp; quality</h2><pre id="live-quality" class="mono"></pre></div>
+    <div class="panel">
+      <h2>Band survey <span class="mut">— receive only, transmits nothing</span></h2>
+      <div class="toolbar">
+        <label>Start (MHz) <input id="sv-start" type="number" value="902" step="1"></label>
+        <label>Stop (MHz) <input id="sv-stop" type="number" value="928" step="1"></label>
+        <label>Step (MHz) <input id="sv-step" type="number" value="2" step="0.5"></label>
+        <label>RX gain (dB) <input id="sv-gain" type="number" value="40" step="1"></label>
+        <button id="sv-run" class="primary">Run survey</button>
+        <span id="sv-status" class="mut"></span>
+      </div>
+      <canvas id="sv-plot" width="1280" height="240"></canvas>
+      <div id="sv-summary" class="mut"></div>
+    </div>
   </section>
 
   <!-- ============ RANGE LAB ============ -->
@@ -235,11 +248,15 @@
         <h2>Transmit interlock</h2>
         <p class="mut">Transmission requires an explicit per-session arm action
         (FR-SAF-001). Everything is logged (FR-SAF-010).</p>
+        <h2 style="margin-top:12px">Pre-transmit checklist</h2>
+        <div id="checklist"></div>
+        <br>
         <label>Operator <input id="arm-operator" type="text" placeholder="your name"></label><br><br>
         <label><input type="checkbox" id="arm-ack"> I confirm antennas/loads are safe,
         power limits reviewed, and transmission is authorized in this environment.</label><br><br>
         <button id="arm-btn" class="primary">Arm TX for this session</button>
         <button id="disarm-btn">Disarm</button>
+        <button id="checklist-reset">Reset checklist</button>
         <pre id="safety-state" class="mono"></pre>
       </div>
       <div class="panel">

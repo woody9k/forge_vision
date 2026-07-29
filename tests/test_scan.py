@@ -69,6 +69,8 @@ def test_scan_resume_no_duplication(armed_runtime):
     from forge_vision.server.runtime import Runtime
     rt2 = Runtime(data_dir=armed_runtime.data_dir)
     rt2.connect("sim-pluto-0")
+    from conftest import complete_checklist
+    complete_checklist(rt2)
     rt2.safety.arm("op", "resumed session ack")
     rt2.set_sim_scene("sim-pluto-0", preset="scan")
     resumed = rt2.scan_resume(scan_id)

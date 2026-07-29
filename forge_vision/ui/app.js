@@ -680,6 +680,7 @@ max duty cycle     ${lim.max_duty_cycle}
 max tx gain        ${lim.max_tx_gain_db} dB
 frequency range    ${fmtHz(lim.min_frequency_hz)} – ${fmtHz(lim.max_frequency_hz)}
 active profile     ${esc(lim.active_profile)}</pre>`;
+  renderChecklist(s.safety.checklist);
   const audit = await api("/api/safety/audit?n=100");
   $("audit-log").textContent = audit.map((a) =>
     `${new Date(a.t * 1000).toLocaleTimeString()}  ${a.event}  ` +
@@ -687,6 +688,32 @@ active profile     ${esc(lim.active_profile)}</pre>`;
   ).reverse().join("\n") || "no events";
   setTxIndicator(s.safety);
 }
+
+function renderChecklist(cl) {
+  $("checklist").innerHTML = cl.items.map((i) => `
+    <div style="margin-bottom:7px">
+      <label><input type="checkbox" data-check="${esc(i.id)}"
+        ${i.confirmed ? "checked" : ""}>
+      ${esc(i.text)} ${i.required
+        ? '<span class="tag" style="background:#2d1410;color:#f0a08e">required</span>'
+        : '<span class="tag">advisory</span>'}</label>
+    </div>`).join("");
+  $("checklist").querySelectorAll("input[data-check]").forEach((box) => {
+    box.onchange = async () => {
+      await api("/api/safety/checklist", { method: "POST",
+        body: { id: box.dataset.check, confirmed: box.checked } });
+      refreshSafety();
+    };
+  });
+  $("arm-btn").disabled = !cl.complete;
+  $("arm-btn").title = cl.complete ? ""
+    : "complete the required pre-transmit checks first";
+}
+
+$("checklist-reset").onclick = async () => {
+  await api("/api/safety/checklist", { method: "POST", body: { reset: true } });
+  refreshSafety();
+};
 
 $("arm-btn").onclick = async () => {
   if (!$("arm-ack").checked) { alert("You must confirm the safety acknowledgement."); return; }
@@ -702,6 +729,66 @@ $("freq-profile").onchange = async () => {
   await api("/api/safety/profile", { method: "POST", body: { profile: $("freq-profile").value } });
   refreshSafety();
 };
+
+/* ---------- Band survey (receive only) ---------- */
+$("sv-run").onclick = async () => {
+  const id = $("live-device").value;
+  $("sv-status").textContent = "sweeping… (receive only, no transmission)";
+  try {
+    await ensureConnected(id);
+    const r = await api("/api/survey", { method: "POST", body: {
+      device_id: id,
+      start_hz: parseFloat($("sv-start").value) * 1e6,
+      stop_hz: parseFloat($("sv-stop").value) * 1e6,
+      step_hz: parseFloat($("sv-step").value) * 1e6,
+      rx_gain_db: parseFloat($("sv-gain").value),
+    }});
+    drawSurvey(r);
+    $("sv-status").textContent = "saved → " + r.experiment_id;
+    $("sv-summary").innerHTML =
+      `median noise floor ${r.median_noise_floor_dbfs} dBFS · ` +
+      `quietest <b>${fmtHz(r.quietest.center_hz)}</b> (peak ${r.quietest.peak_dbfs} dBFS) · ` +
+      `busiest <b>${fmtHz(r.busiest.center_hz)}</b> (peak ${r.busiest.peak_dbfs} dBFS)`;
+    refreshStatus();
+  } catch (e) { $("sv-status").textContent = "survey failed: " + e.message; }
+};
+
+function drawSurvey(r) {
+  const cv = $("sv-plot"), ctx = cv.getContext("2d");
+  ctx.fillStyle = "#0a0d11"; ctx.fillRect(0, 0, cv.width, cv.height);
+  const pts = r.points.filter((p) => p.peak_dbfs !== null);
+  if (!pts.length) return;
+  const mL = 48, mB = 26, mT = 10;
+  const lo = Math.min(...pts.map((p) => p.noise_floor_dbfs)) - 5;
+  const hi = Math.max(...pts.map((p) => p.peak_dbfs)) + 5;
+  const X = (f) => mL + ((f - r.start_hz) / (r.stop_hz - r.start_hz || 1)) * (cv.width - mL - 12);
+  const Y = (v) => mT + (1 - (v - lo) / (hi - lo)) * (cv.height - mT - mB);
+  ctx.strokeStyle = "#1b2331"; ctx.fillStyle = "#7d8ba0"; ctx.font = "11px monospace";
+  for (let g = 0; g <= 6; g++) {
+    const gx = mL + (g / 6) * (cv.width - mL - 12);
+    ctx.beginPath(); ctx.moveTo(gx, mT); ctx.lineTo(gx, cv.height - mB); ctx.stroke();
+    ctx.fillText(fmtHz(r.start_hz + (g / 6) * (r.stop_hz - r.start_hz)), gx - 26, cv.height - 8);
+  }
+  for (let g = 0; g <= 4; g++) {
+    const v = lo + (g / 4) * (hi - lo);
+    ctx.fillText(v.toFixed(0), 6, Y(v) + 4);
+  }
+  // peak bars, then the noise-floor trace on top
+  pts.forEach((p) => {
+    const busy = p.occupancy > 0.02;
+    ctx.fillStyle = busy ? "#e0a52e" : "#2b6f5e";
+    const w = Math.max(3, (cv.width - mL - 12) / pts.length - 2);
+    ctx.fillRect(X(p.center_hz) - w / 2, Y(p.peak_dbfs), w,
+                 Y(p.noise_floor_dbfs) - Y(p.peak_dbfs));
+  });
+  ctx.strokeStyle = "#35c4a2"; ctx.lineWidth = 1.5; ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(X(p.center_hz), Y(p.noise_floor_dbfs))
+                          : ctx.moveTo(X(p.center_hz), Y(p.noise_floor_dbfs)));
+  ctx.stroke();
+  ctx.fillStyle = "#7d8ba0";
+  ctx.fillText("bars = peak above floor (amber = occupied) · line = noise floor",
+               mL + 8, mT + 12);
+}
 
 /* ---------- Antenna Lab ---------- */
 let selectedComp = null;

@@ -18,6 +18,16 @@ def client(tmp_path, monkeypatch):
     return TestClient(app_mod.app)
 
 
+def arm(client, operator="api-test"):
+    """Complete the required pre-transmit checks, then arm (FR-SAF-009)."""
+    for item in client.get("/api/safety/checklist").json()["items"]:
+        if item["required"]:
+            client.post("/api/safety/checklist",
+                        json={"id": item["id"], "confirmed": True})
+    return client.post("/api/safety/arm",
+                       json={"operator": operator, "acknowledgement": "ack"})
+
+
 def test_status(client):
     r = client.get("/api/status")
     assert r.status_code == 200
@@ -35,8 +45,7 @@ def test_tx_refused_without_arm(client):
 
 def test_full_range_flow(client):
     client.post("/api/devices/sim-pluto-0/connect")
-    r = client.post("/api/safety/arm",
-                    json={"operator": "api-test", "acknowledgement": "ack"})
+    r = arm(client)
     assert r.status_code == 200
     r = client.post("/api/range/run", json={"device_id": "sim-pluto-0",
                                             "use_background": False})
@@ -56,7 +65,7 @@ def test_full_range_flow(client):
 
 def test_scan_flow(client):
     client.post("/api/devices/sim-pluto-0/connect")
-    client.post("/api/safety/arm", json={"operator": "t", "acknowledgement": "a"})
+    arm(client, "t")
     client.post("/api/sim/sim-pluto-0/scene", json={"preset": "scan"})
     r = client.post("/api/scan/start", json={
         "device_id": "sim-pluto-0",
@@ -75,7 +84,7 @@ def test_scan_flow(client):
 
 def test_emergency_stop_endpoint(client):
     client.post("/api/devices/sim-pluto-0/connect")
-    client.post("/api/safety/arm", json={"operator": "t", "acknowledgement": "a"})
+    arm(client, "t")
     client.post("/api/devices/sim-pluto-0/tx",
                 json={"enable": True, "waveform": "fmcw_bench_56M"})
     r = client.post("/api/safety/stop")
@@ -121,3 +130,27 @@ def test_component_api_flow(client):
 
     r = client.post(f"/api/components/{cid}/delete")
     assert r.status_code == 200
+
+
+def test_checklist_api_gates_arming(client):
+    """Arming over HTTP is refused until the required checks are confirmed."""
+    client.post("/api/devices/sim-pluto-0/connect")
+    r = client.post("/api/safety/arm",
+                    json={"operator": "t", "acknowledgement": "a"})
+    assert r.status_code == 403
+    assert "checklist" in r.json()["detail"]
+    assert arm(client, "t").status_code == 200
+    assert client.get("/api/status").json()["safety"]["checklist"]["complete"]
+
+
+def test_survey_endpoint_is_receive_only(client):
+    client.post("/api/devices/sim-pluto-0/connect")
+    r = client.post("/api/survey", json={"device_id": "sim-pluto-0",
+                                         "start_hz": 902e6, "stop_hz": 910e6,
+                                         "step_hz": 2e6, "samples": 16384})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["points"]) == 5
+    assert body["quietest"]["peak_dbfs"] <= body["busiest"]["peak_dbfs"]
+    # nothing transmitted, and the interlock was never armed
+    assert client.get("/api/status").json()["safety"]["armed"] is False
