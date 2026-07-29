@@ -48,7 +48,12 @@ Open http://127.0.0.1:8347/ and:
    coordinates, and responses that recur across scans fuse into findings with
    persistence and confidence. Click a finding to reach its contributing
    scans; export a Markdown site report following the spec's Appendix B.
-8. **Experiments** → every run is a self-contained package: browse, search,
+8. **SAGE** → ask grounded questions about a site or experiment: *why is
+   finding 1 highlighted?*, *show anomalies between 0.5 and 2 m deep*, *what
+   should I measure next?* Every statement carries an epistemic label
+   (observation / calculation / inference / hypothesis / unknown) and links to
+   the artifacts behind it. It is read-only and cannot transmit.
+9. **Experiments** → every run is a self-contained package: browse, search,
    verify checksums, export/import as zip, annotate, and **Replay** — reprocess
    the stored raw I/Q with new parameters, no hardware needed.
 
@@ -98,6 +103,12 @@ forge_vision/
   sites.py           site model, scan registration, cross-scan fusion into
                      world coordinates, depth slices
   reports.py         Markdown site report (Appendix B outline)
+  sage/
+    facts.py         the grounded Fact: evidence and an epistemic label are
+                     enforced at construction, not by convention
+    analysis.py      quality assessment, experiment summary, finding
+                     explanation, comparison, next-measurement recommendation
+    query.py         deterministic grounded query parser (offline by design)
   experiments/store.py  self-contained packages: raw npy + JSON manifests,
                      checksums, lineage, annotations, export/import
   server/

@@ -203,3 +203,59 @@ def test_site_api_flow(client):
 
 def test_site_scene_404_on_unknown_site(client):
     assert client.get("/api/sites/nope/scene").status_code == 404
+
+
+def test_sage_api_milestone_e(client):
+    """Milestone E over HTTP: ask why an anomaly was highlighted and get an
+    evidence-linked answer."""
+    client.post("/api/devices/sim-pluto-0/connect")
+    arm(client, "t")
+    client.post("/api/sim/sim-pluto-0/scene", json={
+        "targets": [{"kind": "point", "x_m": 1.0, "depth_m": 0.8,
+                     "amplitude": 0.35}],
+        "medium": "soil_dry", "leakage_amplitude": 1e-4})
+    scans = []
+    for _ in range(2):
+        r = client.post("/api/scan/start", json={
+            "device_id": "sim-pluto-0",
+            "plan": {"start_m": 0, "end_m": 2.0, "step_m": 0.25,
+                     "medium": "soil_dry", "chirps": 2, "max_range_m": 8.0}})
+        sid = r.json()["scan_id"]
+        for x in r.json()["positions_m"]:
+            client.post(f"/api/scan/{sid}/point",
+                        json={"x_m": x, "operator_override": True})
+        client.post(f"/api/scan/{sid}/finalize")
+        scans.append(sid)
+
+    site = client.post("/api/sites", json={"name": "sage site"}).json()
+    sid = site["site_id"]
+    client.post(f"/api/sites/{sid}/register", json={
+        "experiment_id": scans[0], "origin_x_m": 0, "origin_y_m": 1.0,
+        "heading_deg": 0})
+    client.post(f"/api/sites/{sid}/register", json={
+        "experiment_id": scans[1], "origin_x_m": 1.0, "origin_y_m": 0,
+        "heading_deg": 90})
+
+    r = client.get(f"/api/sage/site/{sid}/finding/0")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["evidence_count"] >= 2
+    for f in body["facts"]:
+        assert f["kind"] in ("observation", "calculation", "inference",
+                             "hypothesis", "unknown")
+        if f["kind"] != "unknown":
+            assert f["evidence"]
+
+    r = client.post("/api/sage/ask", json={
+        "question": "which findings are confirmed by more than one scan",
+        "site_id": sid})
+    assert r.json()["understood"] is True
+
+    r = client.post("/api/sage/ask", json={
+        "question": "is there treasure down there", "site_id": sid})
+    assert r.json()["understood"] is False
+    assert r.json()["facts"] == []
+
+    assert client.get(f"/api/sage/site/{sid}/recommend").status_code == 200
+    assert client.get(f"/api/sage/experiment/{scans[0]}").status_code == 200
+    assert client.get(f"/api/sage/site/{sid}/finding/99").status_code == 404
