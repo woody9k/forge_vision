@@ -66,6 +66,7 @@ async function refreshStatus() {
   refreshJobs();
   refreshChain();
   refreshRxProtection();
+  refreshPositionUi();
 }
 
 function renderDashboard() {
@@ -664,6 +665,54 @@ $("scan-resume").onclick = async () => {
     await renderBScan(); loadAnnotations();
   } catch (e) { $("scan-status").textContent = "resume failed: " + e.message; }
 };
+/* position source (survey wheel) */
+async function refreshPositionUi() {
+  try {
+    const ports = await api("/api/position/ports");
+    $("pos-port").innerHTML = '<option value="">—</option>' +
+      ports.ports.map((p) =>
+        `<option value="${esc(p.device)}">${esc(p.device)} — ${esc(p.description)}</option>`).join("");
+    const st = await api("/api/position");
+    const l = st.latest;
+    $("pos-status").textContent =
+      `${st.kind}${st.port ? " " + st.port : ""}` +
+      (l ? ` · at ${l.x_m.toFixed(3)} m ±${l.uncertainty_m} m` +
+           (l.stale_s > 1 ? ` (stale ${l.stale_s}s)` : "") : " · no reading") +
+      (st.bad_lines ? ` · ${st.bad_lines} bad line(s)` : "");
+    $("scan-next-auto").disabled = !(currentScan && l);
+  } catch (e) { /* position rig is optional */ }
+}
+
+$("pos-apply").onclick = async () => {
+  const kind = $("pos-kind").value;
+  const body = { kind };
+  if (kind === "serial") {
+    body.port = $("pos-port").value;
+    body.wheel_circumference_m = parseFloat($("pos-circ").value) || 0;
+    body.counts_per_revolution = parseInt($("pos-cpr").value, 10) || 0;
+    if (!body.port) { alert("choose a serial port"); return; }
+  }
+  try {
+    await api("/api/position/source", { method: "POST", body });
+    refreshPositionUi();
+  } catch (e) { $("pos-status").textContent = "failed: " + e.message; }
+};
+
+$("scan-next-auto").onclick = async () => {
+  if (!currentScan) return;
+  try {
+    const r = await api(`/api/scan/${currentScan.id}/point`, {
+      method: "POST", body: { use_position_source: true } });
+    if (!r.accepted) {
+      $("scan-status").textContent = "rejected: " + r.gate_failures.join(", ");
+      return;
+    }
+    $("scan-status").textContent =
+      `captured at ${r.progress ? "grid point" : ""} (wheel)`;
+    await renderBScan();
+  } catch (e) { $("scan-status").textContent = "failed: " + e.message; }
+};
+
 $("scan-interp").onchange = renderBScan;
 $("scan-clutter").onchange = renderBScan;
 $("scan-qual").onchange = renderBScan;

@@ -22,6 +22,8 @@ from ..dsp import stages as _stages  # noqa: F401  (registers stages)
 from ..dsp.pipeline import Pipeline, PipelineContext
 from ..experiments.store import ExperimentStore
 from ..jobs import JobManager
+from ..positioning import (ManualSource, PositionSample, ReplaySource,
+                           SerialSource, pose_from_sample)
 from ..imaging.bscan import BScanBuilder
 from ..imaging.migration import focused_targets, migrate_bscan
 from ..reports import site_report
@@ -91,6 +93,7 @@ class Runtime:
         self.jobs = JobManager()                     # FR-API-003
         self.rf_chain: dict = {"tx_ids": [], "rx_ids": [],
                                "antenna_tx": "", "antenna_rx": ""}
+        self.position_source = ManualSource()        # FR-POS-001 default
         self._register(SimulatedPluto("sim-pluto-0"))
         self._discover_hardware()
 
@@ -462,23 +465,54 @@ class Runtime:
         builder = self.scans[exp_id]["builder"]
         return {"scan_id": exp_id, "status": builder.status()}
 
-    def scan_point(self, exp_id: str, x_m: float, operator_override: bool = False) -> dict:
-        """Capture one scan point with quality gating (UX-SCN-003)."""
+    def scan_point(self, exp_id: str, x_m: float | None = None,
+                   operator_override: bool = False) -> dict:
+        """Capture one scan point with quality gating (UX-SCN-003).
+
+        With no explicit position the active source is asked where the
+        antenna is — that is the survey-wheel path. The reading is snapped to
+        the nearest planned position, and how far it had to move to get there
+        is recorded rather than hidden.
+        """
         if exp_id not in self.scans:
             self.scan_resume(exp_id)
         session = self.scans[exp_id]
         builder: BScanBuilder = session["builder"]
         plan = session["plan"]
         dev = self.device(session["device_id"])
+
+        sample = None
+        snap_error_m = 0.0
+        if x_m is None:
+            sample = self.position_source.read()
+            if sample is None:
+                raise ValueError(
+                    f"the {self.position_source.name} position source has no "
+                    "reading; enter a position explicitly or check the link")
+            nearest = min(builder.positions,
+                          key=lambda p: abs(p - sample.x_m))
+            snap_error_m = abs(float(nearest) - sample.x_m)
+            x_m = float(nearest)
         if builder.index_of(x_m) is None:
             raise ValueError(f"position {x_m} m is outside the scan plan")
 
         wf = self._check_waveform(dev, plan["waveform"])
         med = self._medium_from(plan["medium"])
         cal = self.calibration[dev.device_id]
-        position = {"x_m": x_m,
-                    "uncertainty_m": plan["position_uncertainty_m"],
-                    "height_m": plan["antenna_height_m"]}
+        if sample is not None:
+            position = pose_from_sample(sample, plan)
+            position["x_m"] = x_m               # the planned grid position
+            position["reported_x_m"] = sample.x_m
+            position["snap_error_m"] = round(snap_error_m, 4)
+            # snapping further than half a step means the rig is not where the
+            # plan thinks it is; that is a measurement problem, not a rounding
+            # detail, so it becomes a gate failure below
+            position["uncertainty_m"] = max(sample.uncertainty_m, snap_error_m)
+        else:
+            position = {"x_m": x_m,
+                        "uncertainty_m": plan["position_uncertainty_m"],
+                        "height_m": plan["antenna_height_m"],
+                        "source": "operator"}
         seg = self._ranging_capture(dev, wf, plan["chirps"], position=position)
         result = self._process_range(
             seg, med, cal["cable_delay_s"], None,
@@ -494,6 +528,13 @@ class Runtime:
         if quality.get("profile_peak_snr_db", 0) < 6:
             gate_failures.append(
                 f"peak SNR {quality.get('profile_peak_snr_db')} dB below 6 dB gate")
+        if snap_error_m > plan["step_m"] / 2:
+            gate_failures.append(
+                f"reported position {position.get('reported_x_m'):.3f} m is "
+                f"{snap_error_m:.3f} m from the nearest planned point "
+                f"({x_m:.3f} m) — more than half a step")
+        for w in position.get("warnings", []):
+            gate_failures.append(w)
         if gate_failures and not operator_override:
             return {"accepted": False, "gate_failures": gate_failures,
                     "quality": quality,
@@ -936,6 +977,40 @@ class Runtime:
 
     def job_status(self, job_id: str, include_result: bool = False) -> dict:
         return self.jobs.get(job_id).to_dict(include_result=include_result)
+
+    # -- position sources (FR-POS-001/002, UX-SCN-002) ----------------------
+    def set_position_source(self, kind: str, **opts) -> dict:
+        """Switch between manual entry, a serial rig, or recorded positions."""
+        old = self.position_source
+        if kind == "manual":
+            self.position_source = ManualSource(
+                uncertainty_m=float(opts.get("uncertainty_m", 0.01)))
+        elif kind == "serial":
+            self.position_source = SerialSource(
+                port=opts["port"], baud=int(opts.get("baud", 115200)),
+                wheel_circumference_m=float(
+                    opts.get("wheel_circumference_m", 0.0)),
+                counts_per_revolution=int(
+                    opts.get("counts_per_revolution", 0)),
+                uncertainty_m=float(opts.get("uncertainty_m", 0.01)))
+        elif kind == "replay":
+            self.position_source = ReplaySource(opts.get("samples", []))
+        else:
+            raise KeyError(f"unknown position source: {kind}; "
+                           "expected manual, serial, or replay")
+        if old is not self.position_source:
+            old.close()
+        self.safety.audit("position_source_changed", kind=kind,
+                          **{k: v for k, v in opts.items() if k != "samples"})
+        return self.position_status()
+
+    def position_status(self) -> dict:
+        src = self.position_source
+        status = src.status()
+        sample = src.latest()          # observing must not consume a sample
+        status["latest"] = sample.to_dict() if sample else None
+        status["kind"] = src.name
+        return status
 
     def set_rf_chain(self, tx_ids=None, rx_ids=None, antenna_tx: str = "",
                      antenna_rx: str = "") -> dict:

@@ -223,6 +223,34 @@ def path_attenuation(body: dict = Body(...)):
         raise _fail(exc)
 
 
+# -- position sources (FR-POS-001/002, UX-SCN-002) ----------------------------
+@app.get("/api/position")
+def position_status():
+    return runtime.position_status()
+
+
+@app.post("/api/position/source")
+def set_position_source(body: dict = Body(...)):
+    try:
+        kind = body.pop("kind", "manual")
+        return runtime.set_position_source(kind, **body)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/position/ports")
+def list_serial_ports():
+    """Candidate serial ports for a position rig."""
+    try:
+        from serial.tools import list_ports
+        return {"available": True, "ports": [
+            {"device": p.device, "description": p.description,
+             "hwid": p.hwid} for p in list_ports.comports()]}
+    except ImportError:
+        return {"available": False, "ports": [],
+                "error": "pyserial is not installed; run `pip install pyserial`"}
+
+
 # -- calibration -------------------------------------------------------------
 @app.get("/api/calibration/{device_id}")
 def calibration(device_id: str, waveform: str = ""):
@@ -282,8 +310,10 @@ def scan_start(body: dict = Body(...)):
 @app.post("/api/scan/{scan_id}/point")
 def scan_point(scan_id: str, body: dict = Body(...)):
     try:
-        return runtime.scan_point(scan_id, float(body["x_m"]),
-                                  bool(body.get("operator_override", False)))
+        x = body.get("x_m")
+        return runtime.scan_point(
+            scan_id, None if x is None else float(x),
+            bool(body.get("operator_override", False)))
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
