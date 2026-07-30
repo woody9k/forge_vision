@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+# Forge Vision process control.
+#
+#   deploy/forge-vision preflight     check the host before deploying
+#   deploy/forge-vision start|stop|restart|status|health|logs
+#   deploy/forge-vision backup [dir]  archive the data directory
+#   deploy/forge-vision install-service   write a systemd --user unit
+#
+# Settings come from deploy/forge-vision.env if it exists (see the .example).
+# Environment variables already set take precedence over that file.
+#
+# Two constraints drive the design of this script:
+#
+#   * Only one process may claim the Pluto's USB interface, so a second
+#     instance cannot reach the radio. `start` refuses to run twice, and
+#     there is deliberately no --workers option.
+#   * `pkill -f 'uvicorn forge_vision'` matches the killing shell's own
+#     command line. This uses a pidfile and verifies /proc/<pid>/cmdline
+#     before signalling anything, so it cannot kill a recycled pid or
+#     itself.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# Config file first, then real environment wins over it.
+ENV_FILE="${FORGE_VISION_ENV_FILE:-$ROOT/deploy/forge-vision.env}"
+if [ -f "$ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    set -a; source "$ENV_FILE"; set +a
+fi
+
+VENV="${FORGE_VISION_VENV:-$ROOT/.venv}"
+PY="$VENV/bin/python"
+DATA="${FORGE_VISION_DATA:-$HOME/.forge-vision}"
+HOST="${FORGE_VISION_HOST:-127.0.0.1}"
+PORT="${FORGE_VISION_PORT:-8347}"
+RUN_DIR="$DATA/run"
+LOG_DIR="$DATA/logs"
+PIDFILE="$RUN_DIR/forge-vision.pid"
+LOG="$LOG_DIR/server.log"
+APP="forge_vision.server.app:app"
+STOP_TIMEOUT="${FORGE_VISION_STOP_TIMEOUT:-15}"
+START_TIMEOUT="${FORGE_VISION_START_TIMEOUT:-30}"
+
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
+say()  { printf '%s\n' "$*"; }
+
+is_loopback() { [ "$HOST" = "127.0.0.1" ] || [ "$HOST" = "localhost" ] || [ "$HOST" = "::1" ]; }
+
+# Print the pid if a live server we own is running; otherwise return 1.
+# Verifying cmdline guards against the pid having been recycled by the OS.
+running_pid() {
+    [ -f "$PIDFILE" ] || return 1
+    local pid
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    [ -n "${pid:-}" ] || return 1
+    [ -d "/proc/$pid" ] || return 1
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "$APP" || return 1
+    printf '%s' "$pid"
+}
+
+port_owner() {
+    # pid listening on $PORT, if any. Falls back quietly when ss is absent.
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -lntpH "sport = :$PORT" 2>/dev/null \
+        | grep -oP 'pid=\K[0-9]+' | head -1
+}
+
+http_get() {
+    "$PY" - "$1" <<'EOF' 2>/dev/null
+import json, sys, urllib.request
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=5) as r:
+        print(json.dumps(json.load(r)))
+except Exception:
+    sys.exit(1)
+EOF
+}
+
+base_url() {
+    local h="$HOST"
+    [ "$h" = "0.0.0.0" ] && h=127.0.0.1
+    [ "$h" = "::" ] && h="[::1]"
+    printf 'http://%s:%s' "$h" "$PORT"
+}
+
+# ---------------------------------------------------------------- preflight
+cmd_preflight() {
+    local fail=0
+    say "Forge Vision preflight — $ROOT"
+    say ""
+
+    say "interpreter and dependencies"
+    if [ -x "$PY" ]; then
+        ok "venv $($PY -V 2>&1)"
+    else
+        bad "no interpreter at $PY — run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+        return 1
+    fi
+    if "$PY" -c 'import fastapi, uvicorn, numpy' 2>/dev/null; then
+        ok "fastapi, uvicorn, numpy importable"
+    else
+        bad "missing dependencies — run: $VENV/bin/pip install -r requirements.txt"
+        fail=1
+    fi
+    # The app builds its Runtime at import time, so an import error is a
+    # startup failure. Catch it here rather than in the log after launch.
+    if FORGE_VISION_DATA="$DATA" "$PY" -c "import ${APP%:*}" 2>/dev/null; then
+        ok "application imports cleanly (Runtime constructs)"
+    else
+        bad "application fails to import — startup would fail:"
+        FORGE_VISION_DATA="$DATA" "$PY" -c "import ${APP%:*}" 2>&1 | tail -5 | sed 's/^/      /'
+        fail=1
+    fi
+
+    say ""
+    say "data directory"
+    if mkdir -p "$DATA" "$RUN_DIR" "$LOG_DIR" 2>/dev/null && [ -w "$DATA" ]; then
+        ok "$DATA writable ($(du -sh "$DATA" 2>/dev/null | cut -f1) in use)"
+    else
+        bad "$DATA is not writable"
+        fail=1
+    fi
+    local free_kb free_gb
+    free_kb="$(df -Pk "$DATA" 2>/dev/null | awk 'NR==2{print $4}')"
+    free_gb=$(( ${free_kb:-0} / 1024 / 1024 ))
+    if [ "${free_kb:-0}" -lt 1048576 ]; then
+        warn "only ${free_gb} GB free — raw captures are immutable and accumulate"
+    else
+        ok "${free_gb} GB free"
+    fi
+
+    say ""
+    say "network"
+    local owner
+    if owner="$(port_owner)" && [ -n "$owner" ]; then
+        if [ "$(running_pid || true)" = "$owner" ]; then
+            ok "port $PORT held by this deployment (pid $owner)"
+        else
+            bad "port $PORT already in use by pid $owner ($(ps -p "$owner" -o comm= 2>/dev/null))"
+            fail=1
+        fi
+    else
+        ok "port $PORT free"
+    fi
+    if is_loopback; then
+        ok "binding $HOST — reachable only from this machine"
+    else
+        warn "binding $HOST — the API will be reachable from the network"
+        warn "  there is no authentication; transmit endpoints would be exposed"
+        warn "  see docs/DEPLOY.md before doing this on an untrusted network"
+    fi
+
+    say ""
+    say "radio support (optional)"
+    if "$PY" -c 'import adi' 2>/dev/null; then
+        ok "pyadi-iio present — physical Pluto supported"
+    else
+        warn "pyadi-iio absent — simulated devices only"
+        warn "  install with: $VENV/bin/pip install pyadi-iio pylibiio"
+    fi
+    if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx plugdev; then
+        ok "user is in plugdev (USB access)"
+    else
+        warn "user not in plugdev — a USB Pluto may be unreachable"
+    fi
+
+    say ""
+    say "source tree"
+    if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        local dirty behind
+        dirty="$(git -C "$ROOT" status --porcelain | wc -l)"
+        [ "$dirty" -eq 0 ] && ok "working tree clean" || warn "$dirty uncommitted change(s) — deploying something not in git"
+        git -C "$ROOT" fetch --quiet origin 2>/dev/null || true
+        behind="$(git -C "$ROOT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
+        if [ "${behind:-0}" -gt 0 ]; then
+            warn "$behind commit(s) on origin/main not in this tree"
+        else
+            ok "up to date with origin/main ($(git -C "$ROOT" rev-parse --short HEAD))"
+        fi
+    fi
+
+    say ""
+    [ "$fail" -eq 0 ] && say "preflight passed" || say "preflight FAILED"
+    return "$fail"
+}
+
+# -------------------------------------------------------------------- start
+cmd_start() {
+    local pid
+    if pid="$(running_pid)"; then
+        say "already running (pid $pid) — only one instance may claim the radio"
+        return 0
+    fi
+    local owner
+    if owner="$(port_owner)" && [ -n "$owner" ]; then
+        bad "port $PORT is held by pid $owner; not starting"
+        return 1
+    fi
+    [ -x "$PY" ] || { bad "no interpreter at $PY — run preflight"; return 1; }
+
+    mkdir -p "$RUN_DIR" "$LOG_DIR"
+    if ! is_loopback; then
+        warn "binding $HOST with no authentication — transmit endpoints are network-reachable"
+    fi
+
+    # FORGE_VISION_DATA must be exported before the process starts: the app
+    # constructs its Runtime at import time.
+    say "starting $APP on $HOST:$PORT"
+    FORGE_VISION_DATA="$DATA" nohup "$VENV/bin/uvicorn" "$APP" \
+        --host "$HOST" --port "$PORT" \
+        >>"$LOG" 2>&1 &
+    local child=$!
+    printf '%s\n' "$child" > "$PIDFILE"
+
+    local waited=0
+    while [ "$waited" -lt "$START_TIMEOUT" ]; do
+        if ! kill -0 "$child" 2>/dev/null; then
+            bad "process exited during startup — last lines of $LOG:"
+            tail -15 "$LOG" | sed 's/^/      /'
+            rm -f "$PIDFILE"
+            return 1
+        fi
+        if http_get "$(base_url)/api/status" >/dev/null; then
+            ok "up (pid $child) — $(base_url)"
+            say "logs: $LOG"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    bad "started but did not answer /api/status within ${START_TIMEOUT}s"
+    tail -15 "$LOG" | sed 's/^/      /'
+    return 1
+}
+
+# --------------------------------------------------------------------- stop
+cmd_stop() {
+    local pid
+    if ! pid="$(running_pid)"; then
+        say "not running"
+        rm -f "$PIDFILE"
+        return 0
+    fi
+    say "stopping pid $pid"
+    kill -TERM "$pid" 2>/dev/null || true
+    local waited=0
+    while [ "$waited" -lt "$STOP_TIMEOUT" ]; do
+        kill -0 "$pid" 2>/dev/null || { ok "stopped"; rm -f "$PIDFILE"; return 0; }
+        sleep 1
+        waited=$((waited + 1))
+    done
+    warn "still alive after ${STOP_TIMEOUT}s; sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 1
+    rm -f "$PIDFILE"
+    ok "killed"
+}
+
+cmd_restart() { cmd_stop; cmd_start; }
+
+# ------------------------------------------------------------------- status
+cmd_status() {
+    local pid
+    if pid="$(running_pid)"; then
+        ok "running (pid $pid, up $(ps -p "$pid" -o etime= | tr -d ' '))"
+        say "     url: $(base_url)"
+        say "     data: $DATA"
+        say "     log: $LOG"
+        is_loopback || warn "bound to $HOST — network-reachable, unauthenticated"
+    else
+        bad "not running"
+        [ -f "$PIDFILE" ] && warn "stale pidfile $PIDFILE"
+        return 1
+    fi
+}
+
+# ------------------------------------------------------------------- health
+cmd_health() {
+    local body
+    if ! body="$(http_get "$(base_url)/api/status")"; then
+        bad "no answer from $(base_url)/api/status"
+        return 1
+    fi
+    # The body goes in argv, not stdin: stdin is already the script heredoc.
+    "$PY" - "$body" <<'EOF'
+import json, sys
+d = json.loads(sys.argv[1])
+devs = d.get("devices", [])
+safety = d.get("safety", {}) or {}
+store = d.get("storage", {}) or {}
+print(f"  \033[32m✓\033[0m responding, version {d.get('version', '?')}")
+for x in devs:
+    state = "connected" if x.get("connected") else "disconnected"
+    if x.get("tx_enabled"):
+        state += ", TX ENABLED"
+    print(f"     device {x.get('device_id')} ({x.get('kind')}): {state}")
+gb = 1024 ** 3
+print(f"     captures: {store.get('experiments_bytes', 0) / gb:.2f} GB stored, "
+      f"{store.get('disk_free_bytes', 0) / gb:.0f} GB free"
+      + ("  \033[33m! LOW SPACE\033[0m" if store.get("low_space_warning") else ""))
+print(f"     armed: {safety.get('armed')}   tx_active: {safety.get('tx_active')}")
+if safety.get("tx_active"):
+    print("  \033[33m!\033[0m transmitter is ACTIVE on "
+          f"{safety.get('tx_active_devices')}")
+EOF
+}
+
+cmd_logs() { mkdir -p "$LOG_DIR"; touch "$LOG"; tail -n "${2:-50}" -f "$LOG"; }
+
+# ------------------------------------------------------------------- backup
+cmd_backup() {
+    local dest="${1:-$ROOT/backups}"
+    mkdir -p "$dest"
+    local stamp archive
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    archive="$dest/forge-vision-$stamp.tar.gz"
+    say "archiving $DATA (raw captures are immutable — this is the copy that matters)"
+    tar -czf "$archive" -C "$(dirname "$DATA")" --exclude=run --exclude=logs "$(basename "$DATA")"
+    ok "$archive ($(du -h "$archive" | cut -f1))"
+    say "restore with: tar -xzf $archive -C $(dirname "$DATA")"
+}
+
+# ---------------------------------------------------------- install-service
+cmd_install_service() {
+    local unit="$HOME/.config/systemd/user/forge-vision.service"
+    mkdir -p "$(dirname "$unit")"
+    cat > "$unit" <<EOF
+[Unit]
+Description=Forge Vision GPR platform
+Documentation=file://$ROOT/docs/DEPLOY.md
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=$ROOT
+Environment=FORGE_VISION_DATA=$DATA
+ExecStart=$VENV/bin/uvicorn $APP --host $HOST --port $PORT
+Restart=on-failure
+RestartSec=5
+# One process only: a second instance cannot claim the radio's USB interface.
+
+[Install]
+WantedBy=default.target
+EOF
+    ok "wrote $unit"
+    say ""
+    say "enable it with:"
+    say "  systemctl --user daemon-reload"
+    say "  systemctl --user enable --now forge-vision"
+    say "  systemctl --user status forge-vision"
+    say ""
+    say "note: user units stop at logout unless lingering is on:"
+    say "  sudo loginctl enable-linger $USER"
+    say ""
+    warn "if you use systemd, manage the process with systemctl rather than"
+    warn "this script's start/stop — two supervisors will fight over the port."
+}
+
+usage() {
+    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+
+case "${1:-}" in
+    preflight)        cmd_preflight ;;
+    start)            cmd_start ;;
+    stop)             cmd_stop ;;
+    restart)          cmd_restart ;;
+    status)           cmd_status ;;
+    health)           cmd_health ;;
+    logs)             cmd_logs "$@" ;;
+    backup)           cmd_backup "${2:-}" ;;
+    install-service)  cmd_install_service ;;
+    ""|-h|--help)     usage 0 ;;
+    *)                say "unknown command: $1"; usage 1 ;;
+esac

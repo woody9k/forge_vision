@@ -5,3 +5,7 @@ __pycache__/
 
 # downloaded vendor firmware images (large binaries, not source)
 pluto_firmware/
+
+# local deployment settings and data archives
+deploy/forge-vision.env
+backups/
