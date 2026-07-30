@@ -297,6 +297,26 @@ def range_run(body: dict = Body(default={})):
         raise _fail(exc)
 
 
+@app.post("/api/stepped/run")
+def stepped_run(body: dict = Body(default={})):
+    """Stepped-frequency synthesis: sweep the LO, combine chunks coherently."""
+    try:
+        return runtime.stepped_run(
+            device_id=body.get("device_id", "sim-pluto-0"),
+            start_hz=float(body.get("start_hz", 100e6)),
+            stop_hz=float(body.get("stop_hz", 500e6)),
+            waveform_name=body.get("waveform", "fmcw_pluto_40M"),
+            overlap=float(body.get("overlap", 0.5)),
+            chirps=int(body.get("chirps", 4)),
+            medium=body.get("medium"),
+            correction=body.get("correction", "overlap"),
+            max_range_m=float(body.get("max_range_m", 20.0)),
+            name=body.get("name", "stepped-frequency run"),
+            operator=body.get("operator", ""))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- scan studio -------------------------------------------------------------
 @app.post("/api/scan/start")
 def scan_start(body: dict = Body(...)):

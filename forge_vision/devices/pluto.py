@@ -115,6 +115,53 @@ class PlutoDevice(DeviceAdapter):
         except Exception:  # noqa: BLE001 - older firmware may lack the attr
             return None
 
+    def _lo_settable(self, hz: float) -> bool:
+        try:
+            self._sdr.rx_lo = int(hz)
+            return True
+        except Exception:  # noqa: BLE001 - rejection is the signal we want
+            return False
+
+    def _verify_tuning_bounds(self, lo: float, hi: float) -> tuple[float, float, str]:
+        """Trust, then verify: the advertised range can be wider than reality.
+
+        An AD9364-unlocked Pluto advertises `frequency_available` from
+        46.875 MHz but the synthesiser refuses anything under 70 MHz. Taking
+        the advertised figure at face value produces a platform that offers a
+        band and then fails mid-scan, so the edges are probed and narrowed to
+        what the hardware actually accepts.
+        """
+        note = ""
+        original = None
+        try:
+            original = int(self._sdr.rx_lo)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if not self._lo_settable(lo):
+                good = hi if self._lo_settable(hi) else None
+                if good is not None:
+                    bad, ok = lo, good
+                    for _ in range(24):          # ~1 kHz resolution, bounded
+                        if ok - bad <= 1e3:
+                            break
+                        mid = (bad + ok) / 2
+                        if self._lo_settable(mid):
+                            ok = mid
+                        else:
+                            bad = mid
+                    note = (f"driver advertised a {lo / 1e6:.3f} MHz lower "
+                            f"limit but rejects anything below "
+                            f"{ok / 1e6:.3f} MHz; using the measured value")
+                    lo = ok
+        finally:
+            if original is not None:
+                try:
+                    self._sdr.rx_lo = original
+                except Exception:  # noqa: BLE001
+                    pass
+        return lo, hi, note
+
     def _detect_capabilities(self) -> None:
         """Read real limits from the driver rather than assuming a board.
 
@@ -144,6 +191,7 @@ class PlutoDevice(DeviceAdapter):
 
         lo = min(lo_rx[0], (lo_tx or lo_rx)[0])
         hi = max(lo_rx[1], (lo_tx or lo_rx)[1])
+        lo, hi, bounds_note = self._verify_tuning_bounds(lo, hi)
         model = ""
         try:
             model = self._sdr._ctx.attrs.get("ad9361-phy,model", "")
@@ -169,6 +217,8 @@ class PlutoDevice(DeviceAdapter):
                      f"TX bandwidth {caps.tx_bandwidth / 1e6:.0f} MHz, "
                      f"sample rate {caps.min_sample_rate / 1e6:.2f}-"
                      f"{caps.max_sample_rate / 1e6:.2f} MSPS")
+        if bounds_note:
+            notes.append(bounds_note)
         if model.startswith("ad9363") and caps.tx_bandwidth > 20e6:
             notes.append(
                 "NOTE: the driver permits more bandwidth than the AD9363 is "

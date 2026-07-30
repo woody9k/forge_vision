@@ -15,6 +15,15 @@ Releases 0.6 (portable field system) and 1.0 (validated platform) are not
 started. Nothing has ever transmitted: the receive path is verified against
 real hardware, the transmit path is exercised only in simulation.
 
+## Documentation
+
+| Audience | Read |
+|---|---|
+| Using the API from code or another AI | [docs/AGENTS.md](docs/AGENTS.md) — concepts, safety boundaries, common tasks |
+| Endpoint reference with real examples | [docs/API.md](docs/API.md) — generated from a live instance |
+| Working on this codebase | [CLAUDE.md](CLAUDE.md) — invariants, layout, hardware gotchas |
+| Interactive schema | `http://127.0.0.1:8347/docs` while the server runs |
+
 ## Quick start
 
 ```bash
@@ -72,7 +81,7 @@ Open http://127.0.0.1:8347/ and:
 .venv/bin/python -m pytest tests/
 ```
 
-138 tests keyed to the spec's reference experiments and acceptance criteria:
+192 tests keyed to the spec's reference experiments and acceptance criteria:
 
 | Spec item | Test |
 |---|---|
@@ -110,6 +119,8 @@ forge_vision/
     pluto.py         real Pluto/Pluto+ via pyadi-iio (optional)
   dsp/
     pipeline.py      versioned, deterministic stage pipeline with provenance
+    stepped.py       stepped-frequency synthesis: sub-band responses stitched
+                     coherently into a wide synthetic bandwidth (FR-WAV-002)
     stages.py        dechirp/FFT range profile, coherent background
                      subtraction, peak detection, quality metrics
     peaks.py         peaks with measured-vs-derived separation + uncertainty
