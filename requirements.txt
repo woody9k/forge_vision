@@ -10,3 +10,6 @@ httpx>=0.27
 # optional: physical Pluto/Pluto+ hardware support
 # pyadi-iio>=0.0.19
 # pylibiio
+
+# optional: serial position rig (survey wheel / ESP32)
+# pyserial>=3.5

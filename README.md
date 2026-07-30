@@ -98,6 +98,8 @@ Open http://127.0.0.1:8347/ and:
 forge_vision/
   config.py          physical constants, media presets, safety limits
   jobs.py            cancellable background jobs with progress (FR-API-003)
+  positioning.py     manual / survey-wheel / replay position sources, pose
+                     model separating measured angles from assumed ones
   safety.py          TX interlock, limit enforcement, audit log, e-stop
   waveforms.py       versioned waveform catalog (CW, FMCW, stepped, RX-only)
   devices/
@@ -148,6 +150,30 @@ Design principles from the spec that shaped the code:
   clipping and sample loss are alerts and metadata, never silently dropped.
 - **Deterministic DSP** (FR-DSP-010): same raw data + pipeline fingerprint →
   identical output; replay reproduces original results bit-for-bit.
+
+## Position rig (survey wheel)
+
+`firmware/esp32_position/esp32_position.ino` streams JSON position lines over
+USB from an ESP32 with a rotary encoder on a wheel of known circumference:
+
+```
+{"t":12.345,"counts":1830,"x_m":1.372,"heading_deg":91.2}
+```
+
+Only distance is required; an absent field is recorded as *not measured*
+rather than defaulted. Scan Studio can then capture at the reported position
+instead of a typed one, snapping to the nearest planned grid point and
+recording how far it had to move. A rig that has rolled off the end of the
+line, or whose link has stalled, fails the capture gate rather than
+contributing a confidently mislocated trace.
+
+```bash
+.venv/bin/pip install pyserial      # only needed for a serial position rig
+```
+
+Note on GNSS: consumer GPS is metres-accurate while scan steps are
+centimetres, so GPS is not usable as the scan-line position. It is useful for
+tagging the site and as a clock.
 
 ## Data location
 

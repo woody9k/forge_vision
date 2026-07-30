@@ -310,3 +310,36 @@ def test_rx_protection_and_chain_api(client):
     r = client.post("/api/rf_chain", json={"tx_ids": [cable["component_id"]]})
     assert r.json()["total_loss_db"] == 1.0
     assert client.get("/api/rf_chain").json()["resolved"]["tx_path"]
+
+
+def test_position_source_api(client):
+    """UX-SCN-002 over HTTP: switch source, then capture at the reported
+    position without the operator typing one."""
+    import time
+    client.post("/api/devices/sim-pluto-0/connect")
+    arm(client, "t")
+
+    assert client.get("/api/position").json()["kind"] == "manual"
+    ports = client.get("/api/position/ports").json()
+    assert "available" in ports
+
+    r = client.post("/api/position/source", json={
+        "kind": "replay", "samples": [
+            {"x_m": 0.24, "timestamp": time.time(), "source": "replay",
+             "heading_deg": 88.0}]})
+    assert r.status_code == 200
+    assert r.json()["kind"] == "replay"
+
+    scan = client.post("/api/scan/start", json={
+        "device_id": "sim-pluto-0",
+        "plan": {"start_m": 0, "end_m": 1.0, "step_m": 0.25,
+                 "medium": "air", "chirps": 2}}).json()
+    r = client.post(f"/api/scan/{scan['scan_id']}/point",
+                    json={"operator_override": True})     # no x_m supplied
+    assert r.status_code == 200 and r.json()["accepted"] is True
+
+    seg = client.get(f"/api/experiments/{scan['scan_id']}").json()["segments"][0]
+    assert seg["position"]["x_m"] == 0.25
+    assert seg["position"]["heading_deg"] == 88.0
+    assert client.post("/api/position/source",
+                       json={"kind": "telepathy"}).status_code == 404
