@@ -140,11 +140,39 @@ A host can also have a writable node for unrelated reasons (a broad rule from
 some other package), in which case it works with no Pluto rule at all. That
 is luck, not provisioning, and it does not survive a rebuild.
 
-**The alternative needs no permissions at all.** A Pluto on USB also brings up
-a USB-ethernet gadget and answers on `192.168.2.1`. Registering it as
-`ip:192.168.2.1` uses the network backend and sidesteps udev entirely — a
-reasonable choice for a headless bench. `usb:` and `ip:192.168.2.1` are the
-same board, so register one, not both.
+### `usb:` or `ip:192.168.2.1` — choosing a backend
+
+A Pluto on USB is a *composite* device: the radio and a USB-ethernet gadget
+are one piece of hardware on one cable (`0456:b673`, one devnum). The gadget
+gives the board `192.168.2.1` and this host `192.168.2.2`, so there are two
+ways to reach the same radio over the same wire. Neither touches your LAN.
+
+The difference that matters operationally is **exclusivity**:
+
+```
+# with the platform running and holding the radio:
+iio_info -u ip:192.168.2.1   ->  IIO context created with network backend
+iio_info -u usb:1.8.5        ->  ERROR: Unable to claim interface: Device or
+                                 resource busy (16)
+```
+
+`usb:` claims the USB interface exclusively — while the platform holds it,
+nothing else can talk to the radio at all. `ip:` reaches `iiod` on the board,
+which serves several clients at once, so `iio_info`, `iio_attr` and other
+diagnostics keep working alongside a running deployment.
+
+| | `usb:` | `ip:192.168.2.1` |
+|---|---|---|
+| udev rule needed | yes | no |
+| diagnostics while deployed | no — exclusive | yes |
+| survives replug | yes (bare `usb:`) | yes |
+| two Plutos on one host | ambiguous | ambiguous (both are `192.168.2.1`) |
+| extra layers | none | RNDIS + TCP |
+
+`usb:` is the shorter path and the default here. Prefer `ip:192.168.2.1`
+when you want to keep a diagnostic shell on the radio while the platform
+runs, or when you would rather not install a udev rule. They are the same
+board, so register one, not both.
 
 ## Running it as a service
 
