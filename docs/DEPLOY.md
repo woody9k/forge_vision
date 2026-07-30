@@ -65,8 +65,31 @@ only a data-integrity question.
 
 ## First deployment
 
+### Prerequisites
+
+`preflight` can only run once there is a venv to run it in, so this part is
+on you. **Python 3.10 is a hard floor** — `server/schemas.py` is Pydantic, and
+Pydantic resolves annotations at model-build time, so `float | None` is
+evaluated at runtime even under `from __future__ import annotations`. Ubuntu
+22.04 (3.10) and 24.04 (3.12) are fine; 20.04 ships 3.8 and will not work
+without a newer interpreter.
+
 ```bash
-git clone git@github.com:woody9k/forge_vision.git && cd forge_vision
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip
+```
+
+`python3-venv` is a separate package on Debian and Ubuntu, and without it
+`python3 -m venv` fails with a message about `ensurepip` rather than anything
+about the missing package. It is the single most common first-run failure.
+
+### Install
+
+The repository is public, so no credentials are needed:
+
+```bash
+git clone https://github.com/woody9k/forge_vision.git
+cd forge_vision
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
@@ -88,14 +111,40 @@ deploy/forge-vision preflight && deploy/forge-vision restart
 
 ### Physical radio
 
-Optional; the platform runs against simulated devices without it.
+Optional; the platform runs against simulated devices without any of this.
 
 ```bash
-.venv/bin/pip install pyadi-iio pylibiio
+sudo apt install -y libiio-utils          # provides libiio itself
+.venv/bin/pip install pyadi-iio pylibiio  # Python bindings
+iio_info -s                               # should list the board
 ```
 
-You also need USB permission — `preflight` checks for `plugdev` membership.
-`usb:` and `ip:192.168.2.1` are the same board, so do not register both.
+**USB permission is the step that actually bites.** The `usb:` backend opens
+the raw node under `/dev/bus/usb/`, which is `0664 root:root` by default —
+not writable by you. Being in `plugdev` does nothing on its own; the group
+only matters if a udev rule assigns the device to it:
+
+```bash
+sudo tee /etc/udev/rules.d/53-adi-plutosdr-usb.rules >/dev/null <<'RULE'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0456", ATTRS{idProduct}=="b673", MODE="0664", GROUP="plugdev"
+RULE
+sudo usermod -aG plugdev "$USER"
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Group changes need a fresh login. `preflight` tests this properly — it finds
+the Pluto's node and tries to open it read/write, rather than checking group
+membership and assuming.
+
+A host can also have a writable node for unrelated reasons (a broad rule from
+some other package), in which case it works with no Pluto rule at all. That
+is luck, not provisioning, and it does not survive a rebuild.
+
+**The alternative needs no permissions at all.** A Pluto on USB also brings up
+a USB-ethernet gadget and answers on `192.168.2.1`. Registering it as
+`ip:192.168.2.1` uses the network backend and sidesteps udev entirely — a
+reasonable choice for a headless bench. `usb:` and `ip:192.168.2.1` are the
+same board, so register one, not both.
 
 ## Running it as a service
 

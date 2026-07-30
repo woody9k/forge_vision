@@ -59,7 +59,12 @@ running_pid() {
     pid="$(cat "$PIDFILE" 2>/dev/null || true)"
     [ -n "${pid:-}" ] || return 1
     [ -d "/proc/$pid" ] || return 1
-    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "$APP" || return 1
+    # No pipe here on purpose: under `set -o pipefail`, a `grep -q` that exits
+    # on first match SIGPIPEs its producer and fails the whole pipeline, which
+    # would report a live server as stopped.
+    local cmdline
+    cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmdline" in *"$APP"*) ;; *) return 1 ;; esac
     printf '%s' "$pid"
 }
 
@@ -96,7 +101,15 @@ cmd_preflight() {
 
     say "interpreter and dependencies"
     if [ -x "$PY" ]; then
-        ok "venv $($PY -V 2>&1)"
+        # 3.10 is a hard floor: schemas.py is Pydantic, and Pydantic resolves
+        # annotations at model-build time, so `float | None` is evaluated at
+        # runtime even under `from __future__ import annotations`.
+        if "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+            ok "venv $($PY -V 2>&1)"
+        else
+            bad "$($PY -V 2>&1) is too old — 3.10+ required (Pydantic evaluates PEP 604 unions at runtime)"
+            fail=1
+        fi
     else
         bad "no interpreter at $PY — run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
         return 1
@@ -158,15 +171,37 @@ cmd_preflight() {
     say ""
     say "radio support (optional)"
     if "$PY" -c 'import adi' 2>/dev/null; then
-        ok "pyadi-iio present — physical Pluto supported"
+        ok "pyadi-iio present"
     else
         warn "pyadi-iio absent — simulated devices only"
         warn "  install with: $VENV/bin/pip install pyadi-iio pylibiio"
     fi
-    if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx plugdev; then
-        ok "user is in plugdev (USB access)"
+    # grep without -q, so it drains ldconfig rather than SIGPIPEing it.
+    if [ -n "$(ldconfig -p 2>/dev/null | grep libiio || true)" ]; then
+        ok "libiio present"
     else
-        warn "user not in plugdev — a USB Pluto may be unreachable"
+        warn "libiio absent — the usb: and ip: backends both need it"
+        warn "  install with: sudo apt install libiio-utils"
+    fi
+    # Whether the raw USB node is openable is what actually decides if the
+    # usb: backend works. Group membership is a misleading proxy: plugdev
+    # means nothing unless a udev rule assigns the device to plugdev, and a
+    # host can have a writable node with no rule and no group at all.
+    local usbline bus dev node
+    usbline="$(lsusb 2>/dev/null | grep -m1 '0456:b673' || true)"
+    if [ -n "$usbline" ]; then
+        bus="$(printf '%s' "$usbline" | awk '{print $2}')"
+        dev="$(printf '%s' "$usbline" | awk '{gsub(":","",$4); print $4}')"
+        node="/dev/bus/usb/$bus/$dev"
+        if "$PY" -c 'import os,sys; os.close(os.open(sys.argv[1], os.O_RDWR))' "$node" 2>/dev/null; then
+            ok "Pluto on USB at $node, read/write as $USER"
+        else
+            warn "Pluto at $node is not writable by $USER ($(stat -c %a "$node" 2>/dev/null))"
+            warn "  the usb: backend will fail — install the udev rule in docs/DEPLOY.md,"
+            warn "  or register the radio as ip:192.168.2.1 instead"
+        fi
+    else
+        say "     no Pluto on USB right now (simulated devices unaffected)"
     fi
 
     say ""
