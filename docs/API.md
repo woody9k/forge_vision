@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785417907.0725965,
+    "time": 1785422409.7031605,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -101,8 +101,8 @@ Platform state: devices, safety, storage, waveforms.
    "tx_enabled": false,
    "config": {
     "center_frequency_hz": 915000000.0,
-    "sample_rate_hz": 30720000.0,
-    "rx_bandwidth_hz": 30720000.0,
+    "sample_rate_hz": 61440000.0,
+    "rx_bandwidth_hz": 56000000.0,
     "rx_gain_db": 40.0,
     "tx
 ```
@@ -189,6 +189,13 @@ Sites available for cross-scan fusion.
   "created_at": 1785340957.4269104,
   "num_scans": 2,
   "notes": "two crossing lines over one buried target"
+ },
+ {
+  "site_id": "6945e18f8d",
+  "name": "x",
+  "created_at": 1785422026.7649858,
+  "num_scans": 0,
+  "notes": ""
  }
 ]
 ```
@@ -597,4 +604,5 @@ untyped object, so they are documented here.
 | GET | `/api/sites/{site_id}/scene` | Site Scene |
 | POST | `/api/sites/{site_id}/unregister` | Unregister Scan |
 | GET | `/api/status` | Status |
+| POST | `/api/stepped/run` | Stepped Run ⚠️ transmits |
 | POST | `/api/survey` | Survey |

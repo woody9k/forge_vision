@@ -1,6 +1,7 @@
 """HTTP API smoke tests over the FastAPI app (FR-API-001)."""
 
 import importlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -287,7 +288,11 @@ def test_job_api_lifecycle(client):
     assert listing["summary"].get("succeeded") == 1
     assert client.post(f"/api/jobs/{job_id}/retry").status_code == 200
     assert client.get("/api/jobs/nope").status_code == 404
-    assert client.post("/api/jobs", json={"kind": "bogus"}).status_code == 404
+    # an unknown kind is now rejected by the request contract before it
+    # reaches the runtime, with a field-level 422 rather than a bare message
+    bad = client.post("/api/jobs", json={"kind": "bogus"})
+    assert bad.status_code == 422
+    assert "kind" in json.dumps(bad.json())
 
 
 def test_rx_protection_and_chain_api(client):
@@ -341,5 +346,6 @@ def test_position_source_api(client):
     seg = client.get(f"/api/experiments/{scan['scan_id']}").json()["segments"][0]
     assert seg["position"]["x_m"] == 0.25
     assert seg["position"]["heading_deg"] == 88.0
-    assert client.post("/api/position/source",
-                       json={"kind": "telepathy"}).status_code == 404
+    bad = client.post("/api/position/source", json={"kind": "telepathy"})
+    assert bad.status_code == 422, "unknown source kind must fail validation"
+    assert "kind" in json.dumps(bad.json())
