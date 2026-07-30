@@ -460,6 +460,22 @@ $("rescan-uri-btn").onclick = () => doRescan($("rescan-uri").value.trim());
 /* ---------- Live RF ---------- */
 let waterfallRows = [];
 
+// Show what the radio is actually set to, not what the boxes were last left
+// at. These are editable, so they are only synced on connect and on selecting
+// a device — never per frame, which would fight the operator mid-keystroke.
+async function syncDeviceConfigInputs(id) {
+  let st;
+  try { st = await api("/api/status"); } catch (e) { return; }
+  const d = (st.devices || []).find((x) => x.device_id === id);
+  if (!d || !d.config) return;
+  const c = d.config;
+  $("cfg-freq").value = (c.center_frequency_hz / 1e6).toFixed(3).replace(/\.?0+$/, "");
+  $("cfg-rate").value = (c.sample_rate_hz / 1e6).toFixed(2);
+  $("cfg-bw").value = (c.rx_bandwidth_hz / 1e6).toFixed(0);
+  $("cfg-rxgain").value = c.rx_gain_db;
+  $("cfg-txgain").value = c.tx_gain_db;
+}
+
 $("live-connect").onclick = async () => {
   const id = $("live-device").value;
   try {
@@ -468,6 +484,7 @@ $("live-connect").onclick = async () => {
     $("live-stream").disabled = false;
     $("live-tx").disabled = false;
     $("live-record").disabled = false;
+    await syncDeviceConfigInputs(id);
     refreshStatus();
   } catch (e) { $("live-status").textContent = "error: " + e.message; }
 };
@@ -482,9 +499,12 @@ $("cfg-apply").onclick = async () => {
       rx_gain_db: parseFloat($("cfg-rxgain").value),
       tx_gain_db: parseFloat($("cfg-txgain").value),
     }});
+    await syncDeviceConfigInputs(id);
     $("live-status").textContent = "config applied";
   } catch (e) { $("live-status").textContent = "rejected: " + e.message; }
 };
+
+$("live-device").onchange = () => syncDeviceConfigInputs($("live-device").value);
 
 $("live-stream").onclick = () => {
   if (ws) { ws.close(); ws = null; $("live-stream").textContent = "Start stream"; return; }
