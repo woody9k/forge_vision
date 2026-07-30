@@ -6,6 +6,7 @@ Run with:  uvicorn forge_vision.server.app:app --port 8347
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 
@@ -18,6 +19,8 @@ from ..devices.base import ConfigurationError
 from ..safety import SafetyViolation
 from . import schemas as S
 from .runtime import Runtime
+
+log = logging.getLogger("forge_vision.server")
 
 runtime = Runtime()
 app = FastAPI(title="Forge Vision", version="0.3.0")
@@ -716,8 +719,22 @@ async def live(ws: WebSocket, device_id: str = Query("sim-pluto-0"),
     await ws.accept()
     interval = 1.0 / max(0.5, min(fps, 15.0))
     loop = asyncio.get_event_loop()
+
+    # A client that goes away — tab closed, page navigated, laptop asleep — is
+    # otherwise only noticed when a send finally fails, which can take a long
+    # time or never. Until then the handler keeps asking the radio for frames,
+    # and because only one caller at a time may hold the device, stale streams
+    # pile up and starve the live one. Watch for the disconnect directly.
+    async def watch_for_disconnect():
+        try:
+            while True:
+                await ws.receive()
+        except Exception:  # noqa: BLE001 - any failure here means "gone"
+            return
+
+    watcher = asyncio.create_task(watch_for_disconnect())
     try:
-        while True:
+        while not watcher.done():
             dev = runtime.devices.get(device_id)
             if dev is None or not dev.connected:
                 await ws.send_json({"error": "device not connected",
@@ -731,12 +748,24 @@ async def live(ws: WebSocket, device_id: str = Query("sim-pluto-0"),
             await asyncio.sleep(interval)
     except WebSocketDisconnect:
         pass
-    except Exception:  # noqa: BLE001 - a dying stream must not leave TX on
+    except Exception as exc:  # noqa: BLE001 - a dying stream must not leave TX on
+        # Never silently. A stream that stops without saying why leaves the
+        # operator staring at a frozen waterfall with nothing to act on.
+        log.exception("live stream for %s failed", device_id)
+        runtime.safety.audit("live_stream_fault", device=device_id,
+                             error=f"{type(exc).__name__}: {exc}")
+        try:
+            await ws.send_json({"error": f"{type(exc).__name__}: {exc}",
+                                "device_id": device_id, "fatal": True})
+        except Exception:  # noqa: BLE001 - the client may already be gone
+            pass
         for dev in runtime.devices.values():
             if dev.tx_enabled:
                 dev.force_tx_off()
                 runtime.safety.notify_tx_stopped(dev.device_id,
                                                  reason="live_stream_fault")
+    finally:
+        watcher.cancel()
 
 
 # -- static UI ---------------------------------------------------------------

@@ -489,7 +489,11 @@ $("cfg-apply").onclick = async () => {
 $("live-stream").onclick = () => {
   if (ws) { ws.close(); ws = null; $("live-stream").textContent = "Start stream"; return; }
   const id = $("live-device").value;
-  ws = new WebSocket(`ws://${location.host}/ws/live?device_id=${id}&fps=6`);
+  liveAlerts.clear();
+  paintLiveAlerts();
+  if (!window._liveAlertTimer) window._liveAlertTimer = setInterval(paintLiveAlerts, 1000);
+  ws = new WebSocket(
+    `ws://${location.host}/ws/live?device_id=${encodeURIComponent(id)}&fps=6`);
   $("live-stream").textContent = "Stop stream";
   ws.onmessage = (ev) => {
     const f = JSON.parse(ev.data);
@@ -532,14 +536,58 @@ $("live-record").onclick = async () => {
   } catch (e) { $("live-status").textContent = "record failed: " + e.message; }
 };
 
+// Live alerts are held, counted and timestamped rather than redrawn from the
+// current frame alone (UX-LIVE-005).
+//
+// Measured on the bench radio: clipping fired on 1 frame in 87 and
+// near-clipping on 2. Because this function used to overwrite innerHTML every
+// frame, each of those was on screen for a single frame interval — about
+// 0.3 s — then erased by the next clean frame. Long enough to catch a flash of
+// colour, far too short to read. An intermittent fault is the kind that matters
+// most, so a fired alert now stays up, says how often it has happened and how
+// long ago, and expires only after the condition has been quiet for a while.
+const LIVE_ALERT_HOLD_MS = 20000;
+const liveAlerts = new Map();
+
+function noteAlert(key, cls, text) {
+  const now = Date.now();
+  const a = liveAlerts.get(key);
+  if (a) { a.count++; a.last = now; a.text = text; }
+  else liveAlerts.set(key, { cls, text, count: 1, last: now });
+}
+
+function paintLiveAlerts() {
+  if (!$("live-alerts")) return;
+  const now = Date.now();
+  const rows = [];
+  for (const [k, a] of liveAlerts) {
+    if (now - a.last > LIVE_ALERT_HOLD_MS) { liveAlerts.delete(k); continue; }
+    const ago = Math.round((now - a.last) / 1000);
+    rows.push(`<div class="alert ${a.cls}">${esc(a.text)}` +
+      `<span class="mut"> · ${a.count} time${a.count === 1 ? "" : "s"}` +
+      `, last ${ago}s ago</span></div>`);
+  }
+  $("live-alerts").innerHTML = rows.join("");
+}
+
 function renderLiveAlerts(f) {
-  const alerts = [];
-  if (f.clipped) alerts.push(["err", "Receiver clipping — reduce gain (UX-LIVE-005)"]);
-  if (f.loss_events && f.loss_events.length)
-    alerts.push(["err", `Sample loss: ${f.loss_events.length} event(s) — recorded, not concealed`]);
-  if (f.quality && f.quality.near_clipping) alerts.push(["warn", "Signal near full scale"]);
-  $("live-alerts").innerHTML = alerts.map(([c, t]) =>
-    `<div class="alert ${c}">${esc(t)}</div>`).join("");
+  const q = f.quality || {};
+  // peak_amplitude is linear against full scale, so 1.0 is the ADC ceiling.
+  const peak = q.peak_amplitude > 0
+    ? ` · peak ${(20 * Math.log10(q.peak_amplitude)).toFixed(1)} dBFS` : "";
+  const gain = f.config && f.config.rx_gain_db !== undefined
+    ? `, RX gain ${f.config.rx_gain_db} dB` : "";
+  if (f.clipped) {
+    noteAlert("clip", "err",
+      `Receiver clipping — samples are being lost at the ADC. Reduce RX gain${gain}${peak}`);
+  } else if (q.near_clipping) {
+    noteAlert("near", "warn", `Signal near full scale${gain}${peak}`);
+  }
+  if (f.loss_events && f.loss_events.length) {
+    noteAlert("loss", "err",
+      `Sample loss: ${f.loss_events.length} event(s) — recorded, not concealed`);
+  }
+  paintLiveAlerts();
 }
 
 function drawSpectrum(sp) {
