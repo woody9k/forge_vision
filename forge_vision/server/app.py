@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..devices.base import ConfigurationError
 from ..safety import SafetyViolation
+from . import schemas as S
 from .runtime import Runtime
 
 runtime = Runtime()
@@ -39,9 +40,9 @@ def status():
 
 # -- devices -----------------------------------------------------------------
 @app.post("/api/devices/rescan")
-def rescan(body: dict = Body(default={})):
+def rescan(body: S.RescanRequest = S.RescanRequest()):
     """Probe for hardware without restarting; optional explicit URI."""
-    return runtime.rescan_hardware(body.get("uri", ""))
+    return runtime.rescan_hardware(body.uri)
 
 
 @app.post("/api/devices/{device_id}/connect")
@@ -61,27 +62,26 @@ def disconnect(device_id: str):
 
 
 @app.post("/api/devices/{device_id}/configure")
-def configure(device_id: str, cfg: dict = Body(...)):
+def configure(device_id: str, cfg: S.DeviceConfigRequest):
     try:
-        return runtime.configure(device_id, cfg)
+        return runtime.configure(device_id, cfg.set_fields())
     except (ConfigurationError, Exception) as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 @app.post("/api/devices/{device_id}/tx")
-def set_tx(device_id: str, body: dict = Body(...)):
+def set_tx(device_id: str, body: S.TxRequest):
     try:
-        return runtime.set_tx(device_id, bool(body.get("enable")),
-                              body.get("waveform", ""))
+        return runtime.set_tx(device_id, body.enable, body.waveform)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 # -- safety ------------------------------------------------------------------
 @app.post("/api/safety/arm")
-def arm(body: dict = Body(...)):
+def arm(body: S.ArmRequest):
     try:
-        runtime.safety.arm(body.get("operator", ""), body.get("acknowledgement", ""))
+        runtime.safety.arm(body.operator, body.acknowledgement)
         return runtime.safety.status()
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
@@ -105,30 +105,24 @@ def checklist():
 
 
 @app.post("/api/safety/checklist")
-def confirm_checklist(body: dict = Body(...)):
+def confirm_checklist(body: S.ChecklistRequest):
     try:
-        if body.get("reset"):
+        if body.reset:
             return runtime.safety.reset_checklist()
-        return runtime.safety.confirm_checklist_item(
-            body.get("id", ""), bool(body.get("confirmed", True)))
+        return runtime.safety.confirm_checklist_item(body.id, body.confirmed)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 @app.post("/api/survey")
-def survey(body: dict = Body(...)):
+def survey(body: S.SurveyRequest = S.SurveyRequest()):
     """Receive-only band occupancy survey. Transmits nothing."""
     try:
         return runtime.band_survey(
-            device_id=body.get("device_id", "sim-pluto-0"),
-            start_hz=float(body.get("start_hz", 902e6)),
-            stop_hz=float(body.get("stop_hz", 928e6)),
-            step_hz=float(body.get("step_hz", 2e6)),
-            sample_rate_hz=float(body.get("sample_rate_hz", 2.5e6)),
-            rx_gain_db=float(body.get("rx_gain_db", 40.0)),
-            samples=int(body.get("samples", 65536)),
-            name=body.get("name", "band survey"),
-            operator=body.get("operator", ""))
+            device_id=body.device_id, start_hz=body.start_hz,
+            stop_hz=body.stop_hz, step_hz=body.step_hz,
+            sample_rate_hz=body.sample_rate_hz, rx_gain_db=body.rx_gain_db,
+            samples=body.samples, name=body.name, operator=body.operator)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -139,8 +133,8 @@ def audit(n: int = 200):
 
 
 @app.post("/api/safety/profile")
-def set_profile(body: dict = Body(...)):
-    name = body.get("profile", "")
+def set_profile(body: S.ProfileRequest):
+    name = body.profile
     if name not in runtime.safety.limits.frequency_profiles:
         raise HTTPException(404, f"unknown frequency profile: {name}")
     runtime.safety.limits.active_profile = name
@@ -156,9 +150,9 @@ def jobs(kind: str = "", active_only: bool = False):
 
 
 @app.post("/api/jobs")
-def submit_job(body: dict = Body(...)):
+def submit_job(body: S.JobRequest):
     try:
-        return runtime.submit_job(body.get("kind", ""), body.get("params", {}))
+        return runtime.submit_job(body.kind, body.params)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -194,12 +188,11 @@ def rf_chain():
 
 
 @app.post("/api/rf_chain")
-def set_rf_chain(body: dict = Body(...)):
+def set_rf_chain(body: S.RfChainRequest):
     try:
         return runtime.set_rf_chain(
-            tx_ids=body.get("tx_ids"), rx_ids=body.get("rx_ids"),
-            antenna_tx=body.get("antenna_tx", ""),
-            antenna_rx=body.get("antenna_rx", ""))
+            tx_ids=body.tx_ids, rx_ids=body.rx_ids,
+            antenna_tx=body.antenna_tx, antenna_rx=body.antenna_rx)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -215,10 +208,9 @@ def rx_protection(device_id: str = "sim-pluto-0"):
 
 
 @app.post("/api/safety/path_attenuation")
-def path_attenuation(body: dict = Body(...)):
+def path_attenuation(body: S.PathAttenuationRequest):
     try:
-        return runtime.safety.declare_path_attenuation(
-            float(body.get("attenuation_db", 0.0)))
+        return runtime.safety.declare_path_attenuation(body.attenuation_db)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -230,10 +222,9 @@ def position_status():
 
 
 @app.post("/api/position/source")
-def set_position_source(body: dict = Body(...)):
+def set_position_source(body: S.PositionSourceRequest):
     try:
-        kind = body.pop("kind", "manual")
-        return runtime.set_position_source(kind, **body)
+        return runtime.set_position_source(body.kind, **body.options())
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -261,79 +252,65 @@ def calibration(device_id: str, waveform: str = ""):
 
 
 @app.post("/api/calibration/{device_id}/cable_delay")
-def cable_delay(device_id: str, body: dict = Body(...)):
+def cable_delay(device_id: str, body: S.CableDelayRequest):
     try:
-        return runtime.set_cable_delay(device_id, float(body.get("delay_s", 0.0)))
+        return runtime.set_cable_delay(device_id, body.delay_s)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 @app.post("/api/calibration/{device_id}/background")
-def background(device_id: str, body: dict = Body(default={})):
+def background(device_id: str, body: S.BackgroundRequest = S.BackgroundRequest()):
     try:
         return runtime.capture_background(
-            device_id, body.get("waveform", "fmcw_bench_56M"),
-            int(body.get("chirps", 8)), body.get("operator", ""))
+            device_id, body.waveform, body.chirps, body.operator)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 # -- range lab ---------------------------------------------------------------
 @app.post("/api/range/run")
-def range_run(body: dict = Body(default={})):
+def range_run(body: S.RangeRunRequest = S.RangeRunRequest()):
     try:
         return runtime.range_run(
-            device_id=body.get("device_id", "sim-pluto-0"),
-            waveform_name=body.get("waveform", "fmcw_bench_56M"),
-            chirps=int(body.get("chirps", 8)),
-            medium=body.get("medium"),
-            use_background=bool(body.get("use_background", True)),
-            name=body.get("name", "range run"),
-            operator=body.get("operator", ""),
-            tags=body.get("tags"),
-            pipeline_overrides=body.get("pipeline_overrides"),
-            parent_id=body.get("parent_id"))
+            device_id=body.device_id, waveform_name=body.waveform,
+            chirps=body.chirps, medium=body.medium,
+            use_background=body.use_background, name=body.name,
+            operator=body.operator, tags=body.tags,
+            pipeline_overrides=body.pipeline_overrides,
+            parent_id=body.parent_id)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 @app.post("/api/stepped/run")
-def stepped_run(body: dict = Body(default={})):
+def stepped_run(body: S.SteppedRunRequest = S.SteppedRunRequest()):
     """Stepped-frequency synthesis: sweep the LO, combine chunks coherently."""
     try:
         return runtime.stepped_run(
-            device_id=body.get("device_id", "sim-pluto-0"),
-            start_hz=float(body.get("start_hz", 100e6)),
-            stop_hz=float(body.get("stop_hz", 500e6)),
-            waveform_name=body.get("waveform", "fmcw_pluto_40M"),
-            overlap=float(body.get("overlap", 0.5)),
-            chirps=int(body.get("chirps", 4)),
-            medium=body.get("medium"),
-            correction=body.get("correction", "overlap"),
-            max_range_m=float(body.get("max_range_m", 20.0)),
-            name=body.get("name", "stepped-frequency run"),
-            operator=body.get("operator", ""))
+            device_id=body.device_id, start_hz=body.start_hz,
+            stop_hz=body.stop_hz, waveform_name=body.waveform,
+            overlap=body.overlap, chirps=body.chirps, medium=body.medium,
+            correction=body.correction, max_range_m=body.max_range_m,
+            name=body.name, operator=body.operator)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 # -- scan studio -------------------------------------------------------------
 @app.post("/api/scan/start")
-def scan_start(body: dict = Body(...)):
+def scan_start(body: S.ScanStartRequest):
     try:
-        return runtime.scan_start(body.get("device_id", "sim-pluto-0"),
-                                  body.get("plan", {}), body.get("operator", ""))
+        return runtime.scan_start(body.device_id, body.plan.model_dump(),
+                                  body.operator)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 @app.post("/api/scan/{scan_id}/point")
-def scan_point(scan_id: str, body: dict = Body(...)):
+def scan_point(scan_id: str, body: S.ScanPointRequest = S.ScanPointRequest()):
     try:
-        x = body.get("x_m")
-        return runtime.scan_point(
-            scan_id, None if x is None else float(x),
-            bool(body.get("operator_override", False)))
+        return runtime.scan_point(scan_id, body.x_m, body.operator_override)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -365,16 +342,12 @@ def scan_finalize(scan_id: str):
 
 # -- capture / experiments ---------------------------------------------------
 @app.post("/api/capture")
-def capture(body: dict = Body(default={})):
+def capture(body: S.CaptureRequest = S.CaptureRequest()):
     try:
         return runtime.record_capture(
-            device_id=body.get("device_id", "sim-pluto-0"),
-            num_samples=int(body.get("num_samples", 262144)),
-            segments=int(body.get("segments", 1)),
-            name=body.get("name", "raw capture"),
-            operator=body.get("operator", ""),
-            waveform_name=body.get("waveform", ""),
-            tags=body.get("tags"))
+            device_id=body.device_id, num_samples=body.num_samples,
+            segments=body.segments, name=body.name, operator=body.operator,
+            waveform_name=body.waveform, tags=body.tags)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -403,9 +376,9 @@ def derived(exp_id: str, name: str):
 
 
 @app.post("/api/experiments/{exp_id}/annotate")
-def annotate(exp_id: str, body: dict = Body(...)):
+def annotate(exp_id: str, body: S.AnnotationRequest):
     try:
-        return runtime.store.annotate(exp_id, body)
+        return runtime.store.annotate(exp_id, body.model_dump())
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -419,10 +392,10 @@ def verify(exp_id: str):
 
 
 @app.post("/api/experiments/{exp_id}/replay")
-def replay(exp_id: str, body: dict = Body(default={})):
+def replay(exp_id: str, body: S.ReplayRequest = S.ReplayRequest()):
     try:
-        return runtime.replay(exp_id, medium=body.get("medium"),
-                              pipeline_overrides=body.get("pipeline_overrides"))
+        return runtime.replay(exp_id, medium=body.medium,
+                              pipeline_overrides=body.pipeline_overrides)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -458,12 +431,11 @@ def sites():
 
 
 @app.post("/api/sites")
-def create_site(body: dict = Body(...)):
+def create_site(body: S.SiteRequest):
     try:
         return runtime.sites.create(
-            name=body.get("name", "site"),
-            coordinate_system=body.get("coordinate_system", ""),
-            notes=body.get("notes", ""))
+            name=body.name, coordinate_system=body.coordinate_system,
+            notes=body.notes)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -477,23 +449,21 @@ def site(site_id: str):
 
 
 @app.post("/api/sites/{site_id}/register")
-def register_scan(site_id: str, body: dict = Body(...)):
+def register_scan(site_id: str, body: S.RegisterScanRequest):
     try:
         return runtime.sites.register_scan(
-            site_id, body["experiment_id"],
-            origin_x_m=float(body.get("origin_x_m", 0.0)),
-            origin_y_m=float(body.get("origin_y_m", 0.0)),
-            heading_deg=float(body.get("heading_deg", 0.0)),
-            label=body.get("label", ""),
-            position_uncertainty_m=float(body.get("position_uncertainty_m", 0.05)))
+            site_id, body.experiment_id, origin_x_m=body.origin_x_m,
+            origin_y_m=body.origin_y_m, heading_deg=body.heading_deg,
+            label=body.label,
+            position_uncertainty_m=body.position_uncertainty_m)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 @app.post("/api/sites/{site_id}/unregister")
-def unregister_scan(site_id: str, body: dict = Body(...)):
+def unregister_scan(site_id: str, body: S.UnregisterScanRequest):
     try:
-        return runtime.sites.unregister_scan(site_id, body["experiment_id"])
+        return runtime.sites.unregister_scan(site_id, body.experiment_id)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -527,12 +497,11 @@ def site_report_endpoint(site_id: str, tolerance_m: float = 0.6):
 
 # -- SAGE assistant (release 0.5, §8) -----------------------------------------
 @app.post("/api/sage/ask")
-def sage_ask(body: dict = Body(...)):
+def sage_ask(body: S.SageAskRequest):
     try:
-        return runtime.sage_ask(body.get("question", ""),
-                                site_id=body.get("site_id", ""),
-                                experiment_id=body.get("experiment_id", ""),
-                                narrate=bool(body.get("narrate", False)))
+        return runtime.sage_ask(body.question, site_id=body.site_id,
+                                experiment_id=body.experiment_id,
+                                narrate=body.narrate)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -540,7 +509,12 @@ def sage_ask(body: dict = Body(...)):
 @app.post("/api/sage/narrate")
 def sage_narrate(body: dict = Body(...)):
     """Second phase: narrate an answer the client already has. Kept separate
-    so a slow local model never delays the instrument's own findings."""
+    so a slow local model never delays the instrument's own findings.
+
+    Deliberately untyped: the body is an answer this API produced, echoed
+    back verbatim, so constraining it here would mean maintaining a second
+    copy of the fact structure.
+    """
     try:
         return runtime.sage_narrate(body)
     except Exception as exc:  # noqa: BLE001
@@ -554,9 +528,9 @@ def llm_list():
 
 
 @app.post("/api/llm")
-def llm_put(body: dict = Body(...)):
+def llm_put(body: S.LlmEndpointRequest):
     try:
-        return runtime.llm_put(body)
+        return runtime.llm_put(body.model_dump())
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -616,16 +590,13 @@ def components(kind: str = ""):
 
 
 @app.post("/api/components")
-def create_component(body: dict = Body(...)):
+def create_component(body: S.ComponentRequest):
     try:
         return runtime.components.create(
-            kind=body.get("kind", "antenna"), name=body.get("name", ""),
-            connector=body.get("connector", ""),
-            claimed_band=body.get("claimed_band", ""),
-            polarization=body.get("polarization", ""),
-            notes=body.get("notes", ""),
-            nominal_loss_db=body.get("nominal_loss_db"),
-            nominal_delay_ns=body.get("nominal_delay_ns"))
+            kind=body.kind, name=body.name, connector=body.connector,
+            claimed_band=body.claimed_band, polarization=body.polarization,
+            notes=body.notes, nominal_loss_db=body.nominal_loss_db,
+            nominal_delay_ns=body.nominal_delay_ns)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -639,9 +610,9 @@ def component(comp_id: str):
 
 
 @app.post("/api/components/{comp_id}/update")
-def update_component(comp_id: str, body: dict = Body(...)):
+def update_component(comp_id: str, body: S.ComponentUpdateRequest):
     try:
-        return runtime.components.update(comp_id, body)
+        return runtime.components.update(comp_id, body.set_fields())
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -668,22 +639,21 @@ async def import_vna(comp_id: str, file: UploadFile):
 
 # -- simulator ---------------------------------------------------------------
 @app.post("/api/sim/{device_id}/caps")
-def sim_caps(device_id: str, body: dict = Body(...)):
+def sim_caps(device_id: str, body: S.SimCapsRequest):
     """Emulate a specific hardware class (pluto_plus | pluto_rev_b)."""
     try:
-        return runtime.set_caps_profile(device_id, body.get("profile", ""))
+        return runtime.set_caps_profile(device_id, body.profile)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
 
 @app.post("/api/sim/{device_id}/scene")
-def sim_scene(device_id: str, body: dict = Body(default={})):
+def sim_scene(device_id: str, body: S.SimSceneRequest = S.SimSceneRequest()):
     try:
-        return runtime.set_sim_scene(device_id, preset=body.get("preset", ""),
-                                     targets=body.get("targets"),
-                                     medium=body.get("medium"),
-                                     noise_floor_dbfs=body.get("noise_floor_dbfs"),
-                                     leakage_amplitude=body.get("leakage_amplitude"))
+        return runtime.set_sim_scene(
+            device_id, preset=body.preset, targets=body.targets,
+            medium=body.medium, noise_floor_dbfs=body.noise_floor_dbfs,
+            leakage_amplitude=body.leakage_amplitude)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
