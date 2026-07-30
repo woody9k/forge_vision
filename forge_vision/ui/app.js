@@ -189,17 +189,37 @@ async function refreshChain() {
   }
   const r = await api("/api/rf_chain");
   const c = r.resolved;
+  // Antennas are picked separately from the cable path: the active antenna is
+  // the single component whose response shapes every reading taken through it.
+  const antOpts = '<option value="">— none —</option>' + comps
+    .filter((x) => x.kind === "antenna")
+    .map((x) => `<option value="${esc(x.component_id)}">${esc(x.name)}` +
+                `${x.has_vna ? " (characterised)" : ""}</option>`).join("");
+  for (const [id, current] of [["chain-antenna-tx", r.declared.antenna_tx],
+                               ["chain-antenna-rx", r.declared.antenna_rx]]) {
+    const sel = $(id);
+    sel.innerHTML = antOpts;
+    sel.value = current || "";
+  }
+  const named = (id) => {
+    const c2 = comps.find((x) => x.component_id === id);
+    return c2 ? esc(c2.name) : "—";
+  };
   $("chain-summary").innerHTML =
-    `TX: ${c.tx_path.map((x) => esc(x.name)).join(" → ") || "—"} · ` +
-    `RX: ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>` +
+    `TX: ${named(c.antenna_tx)} ← ${c.tx_path.map((x) => esc(x.name)).join(" ← ") || "—"}<br>` +
+    `RX: ${named(c.antenna_rx)} → ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>` +
     `total nominal loss ${c.total_loss_db} dB, delay ${c.total_delay_ns} ns` +
     (c.note ? `<br><span style="color:#e8c96a">${esc(c.note)}</span>` : "");
 }
 
 $("chain-save").onclick = async () => {
   const pick = (id) => [...$(id).selectedOptions].map((o) => o.value);
+  // Send the antennas too. RfChainRequest defaults them to "", so omitting
+  // them here silently cleared whichever antenna was already declared.
   await api("/api/rf_chain", { method: "POST", body: {
-    tx_ids: pick("chain-tx"), rx_ids: pick("chain-rx") } });
+    tx_ids: pick("chain-tx"), rx_ids: pick("chain-rx"),
+    antenna_tx: $("chain-antenna-tx").value,
+    antenna_rx: $("chain-antenna-rx").value } });
   refreshChain();
 };
 
