@@ -65,6 +65,10 @@ class SimScene:
     medium: Medium = field(default_factory=Medium)
     # direct TX->RX coupling for a reasonably separated antenna pair; raise
     # this to demonstrate the leakage-dominance failure mode from the risk table
+    # a fractional-N PLL lands at an arbitrary phase every time it retunes.
+    # Modelling it means stepped-frequency synthesis has to earn its result
+    # rather than quietly benefiting from a perfectly coherent simulator.
+    lo_phase_jitter: bool = True
     leakage_amplitude: float = 0.003
     leakage_delay_s: float = 8e-9        # short internal/cable path
     noise_floor_dbfs: float = -75.0
@@ -143,6 +147,8 @@ class SimulatedPluto(DeviceAdapter):
         self.scene = scene or default_bench_scene()
         self.antenna_x_m = 0.0            # scan-axis position of the antenna pair
         self._t0 = time.time()
+        self._lo_phase = 0.0
+        self._lo_phase_for = None
         self._temperature_c = 41.0
         self._rng_stream = np.random.default_rng(self.scene.seed)
         self.inject_sample_loss = False   # fault-injection hook for tests
@@ -179,6 +185,16 @@ class SimulatedPluto(DeviceAdapter):
         baseband = np.fft.ifft(spectrum)
         return baseband * np.exp(-2j * np.pi * fc * tau)
 
+    def _lo_phase_offset(self) -> float:
+        """Phase the synthesiser happens to land on for the current tuning."""
+        if not self.scene.lo_phase_jitter:
+            return 0.0
+        key = round(self.config.center_frequency_hz)
+        if key != self._lo_phase_for:
+            self._lo_phase_for = key
+            self._lo_phase = float(self._rng_stream.uniform(0, 2 * np.pi))
+        return self._lo_phase
+
     def _synthesize_rx(self, tx: np.ndarray, position: dict | None) -> np.ndarray:
         cfg = self.config
         fs = cfg.sample_rate_hz
@@ -190,6 +206,7 @@ class SimulatedPluto(DeviceAdapter):
             antenna_x = float(position["x_m"])
 
         rx = np.zeros(n, dtype=np.complex128)
+        lo_phase = np.exp(1j * self._lo_phase_offset())
         if self.tx_enabled:
             # direct leakage path
             rx += self.scene.leakage_amplitude * self._delayed(
@@ -208,6 +225,7 @@ class SimulatedPluto(DeviceAdapter):
         noise_rms = 10 ** (self.scene.noise_floor_dbfs / 20)
         gain_lin = 10 ** ((cfg.rx_gain_db - 40.0) / 20)
         noise = self._rng_stream.normal(size=n) + 1j * self._rng_stream.normal(size=n)
+        rx = rx * lo_phase
         rx = rx * gain_lin + noise * (noise_rms / np.sqrt(2)) * gain_lin
         return rx
 

@@ -110,6 +110,8 @@ forge_vision/
     pluto.py         real Pluto/Pluto+ via pyadi-iio (optional)
   dsp/
     pipeline.py      versioned, deterministic stage pipeline with provenance
+    stepped.py       stepped-frequency synthesis: sub-band responses stitched
+                     coherently into a wide synthetic bandwidth (FR-WAV-002)
     stages.py        dechirp/FFT range profile, coherent background
                      subtraction, peak detection, quality metrics
     peaks.py         peaks with measured-vs-derived separation + uncertainty

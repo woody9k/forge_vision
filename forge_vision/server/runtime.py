@@ -20,6 +20,8 @@ from ..devices.simulated import (SceneTarget, SimScene, SimulatedPluto,
                                  default_bench_scene, default_scan_scene)
 from ..dsp import stages as _stages  # noqa: F401  (registers stages)
 from ..dsp.pipeline import Pipeline, PipelineContext
+from ..dsp.stepped import (stepped_range_profile, stitch_subbands,
+                           subband_response)
 from ..experiments.store import ExperimentStore
 from ..jobs import JobManager
 from ..positioning import (ManualSource, PositionSample, ReplaySource,
@@ -708,6 +710,102 @@ class Runtime:
                            __import__("forge_vision").__version__)
         return {"site_id": site_id, "markdown": text,
                 "findings": scene["findings"], "errors": scene["errors"]}
+
+    # -- stepped-frequency synthesis (FR-WAV-002, §17) -----------------------
+    def stepped_run(self, device_id: str, start_hz: float, stop_hz: float,
+                    waveform_name: str = "fmcw_pluto_40M",
+                    overlap: float = 0.5, chirps: int = 4,
+                    medium: str | dict | None = None,
+                    correction: str = "overlap",
+                    max_range_m: float = 20.0, name: str = "stepped-frequency run",
+                    operator: str = "", ctx=None) -> dict:
+        """Sweep the LO across a band and synthesise the wide bandwidth.
+
+        Chunks overlap so the arbitrary phase each PLL retune lands on can be
+        solved for and removed; without that the chunks add incoherently and
+        the result is worse than a single sweep.
+        """
+        dev = self.device(device_id)
+        wf = self._check_waveform(dev, waveform_name)
+        caps = dev.capabilities
+        med = self._medium_from(medium)
+
+        chunk_bw = wf.bandwidth_hz
+        if chunk_bw <= 0:
+            raise ValueError(f"{waveform_name} has no sweep bandwidth")
+        if not 0.0 <= overlap < 1.0:
+            raise ValueError("overlap must be in [0, 1)")
+        step = chunk_bw * (1.0 - overlap)
+
+        # keep every chunk wholly inside what the radio can actually tune
+        lo = max(float(start_hz), caps.min_frequency + chunk_bw / 2)
+        hi = min(float(stop_hz), caps.max_frequency - chunk_bw / 2)
+        if hi < lo:
+            raise ValueError(
+                f"requested {start_hz/1e6:.0f}-{stop_hz/1e6:.0f} MHz leaves no "
+                f"room for a {chunk_bw/1e6:.0f} MHz chunk inside the device "
+                f"range {caps.min_frequency/1e6:.0f}-{caps.max_frequency/1e6:.0f} MHz")
+        centers = list(np.arange(lo, hi + step * 0.5, step))
+        if len(centers) > 256:
+            raise ValueError(f"{len(centers)} chunks requested; widen the step "
+                             "or narrow the band (limit 256)")
+
+        original = DeviceConfig(**dev.config.to_dict())
+        bands = []
+        try:
+            with self.device_locks[device_id]:
+                for i, fc in enumerate(centers):
+                    if ctx is not None:
+                        ctx.check()
+                        ctx.progress(i / len(centers),
+                                     f"{fc/1e6:.0f} MHz ({i+1}/{len(centers)})")
+                    cfg = DeviceConfig(**{**dev.config.to_dict(),
+                                          "center_frequency_hz": float(fc),
+                                          "sample_rate_hz": wf.sample_rate,
+                                          "rx_bandwidth_hz": min(
+                                              wf.sample_rate, caps.max_bandwidth)})
+                    dev.configure(cfg)
+                    self._enable_tx(dev, wf, dev.config.tx_gain_db)
+                    try:
+                        seg = dev.receive(wf.num_samples * chirps)
+                    finally:
+                        self._disable_tx(dev)
+                    bands.append(subband_response(seg.iq, wf.preview(), float(fc),
+                                                  seg.sample_rate_hz))
+        finally:
+            dev.configure(original)
+
+        stitched = stitch_subbands(bands, correction=correction)
+        profile = stepped_range_profile(stitched, medium=med.to_dict(),
+                                        max_range_m=max_range_m)
+
+        manifest = self.store.create(
+            name=name, kind="stepped", operator=operator,
+            objective=f"stepped-frequency synthesis {lo/1e6:.0f}-{hi/1e6:.0f} MHz "
+                      f"in {len(centers)} x {chunk_bw/1e6:.0f} MHz chunks",
+            hardware={"device_id": device_id, "kind": dev.kind,
+                      "rf_chain": self.current_chain()},
+            rf_config={**original.to_dict(), "chunk_waveform": waveform_name,
+                       "centers_hz": [float(c) for c in centers],
+                       "overlap": overlap, "chirps": chirps},
+            calibration={"propagation_model": med.to_dict(),
+                         "cable_delay_s": self.calibration[device_id]["cable_delay_s"]})
+        exp_id = manifest["identity"]["experiment_id"]
+        self.store.add_derived(exp_id, "stepped_profile", profile,
+                               {"stages": [{"stage": "subband_response",
+                                            "version": "1.0", "params": {}},
+                                           {"stage": "stitch_subbands",
+                                            "version": "1.0",
+                                            "params": {"correction": correction}},
+                                           {"stage": "stepped_range_profile",
+                                            "version": "1.0",
+                                            "params": {"max_range_m": max_range_m}}],
+                                "fingerprint": "stepped-1.0"}, [])
+        self.store.finalize(exp_id)
+        self.safety.audit("stepped_run", device=device_id, chunks=len(centers),
+                          synthetic_bandwidth_hz=stitched["synthetic_bandwidth_hz"],
+                          experiment=exp_id)
+        return {"experiment_id": exp_id, **profile}
 
     # -- SAGE assistance (release 0.5, §8) -----------------------------------
     def _narrate(self, answer: dict, narrate: bool = True) -> dict:
