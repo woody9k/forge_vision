@@ -11,13 +11,19 @@ to that document — keep citing them, it is how coverage is tracked.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn forge_vision.server.app:app --host 0.0.0.0 --port 8347
+.venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
 .venv/bin/python -m pytest tests/          # ~190 tests, ~75 s
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
 Data lives in `~/.forge-vision` (override with `FORGE_VISION_DATA`). Tests use
 a temp dir via the `runtime` / `armed_runtime` fixtures in `tests/conftest.py`.
+
+To run it as a deployment rather than by hand, use `deploy/forge-vision`
+(`preflight`, `start`, `stop`, `status`, `health`, `logs`, `backup`) and read
+[docs/DEPLOY.md](docs/DEPLOY.md). **Do not bind to `0.0.0.0` casually** — the
+API has no authentication and can key a transmitter; `SafetyController` gates
+mistakes, not strangers.
 
 ## The rules this codebase holds itself to
 
@@ -79,9 +85,13 @@ positioning.py  manual / survey-wheel / replay position sources
 
 - `pkill -f 'uvicorn forge_vision'` matches the killing shell's own command
   line. Put the kill in its own step and use a bracket pattern:
-  `pkill -f 'uvicorn forge_[v]ision'`.
+  `pkill -f 'uvicorn forge_[v]ision'` — or just use `deploy/forge-vision stop`,
+  which signals a pidfile it has verified against `/proc/<pid>/cmdline`.
 - Serve the UI with no-cache headers (already done) — a stale `app.js` against
   a fresh `index.html` produces controls that silently do nothing.
-- When stacking PRs, verify the base actually merged into `main`:
-  `git log main..origin/<branch>`. Two releases once landed on a stacking
-  branch instead of `main`.
+- A merged PR is not proof the code is on `main`. Verify with
+  `git log main..origin/<branch>`, and check that the artifacts you expect
+  actually exist in the tree. This has bitten twice: two releases landed on a
+  stacking branch instead of `main`, and a commit pushed to a branch *after*
+  its PR merged sat unmerged while the PR still read `MERGED`.
+  `deploy/forge-vision preflight` now reports this before you deploy.
