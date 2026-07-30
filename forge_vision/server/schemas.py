@@ -213,6 +213,12 @@ class RfChainRequest(Strict):
     antenna_rx: str = ""
 
 
+class ChainConfigRequest(Strict):
+    """Save the working chain as a reusable named configuration."""
+    name: str = Field(min_length=1)
+    notes: str = ""
+
+
 class ComponentRequest(Strict):
     kind: str = "antenna"
     name: str = Field(..., min_length=1)

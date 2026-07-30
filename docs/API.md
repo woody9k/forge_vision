@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785422409.7031605,
+    "time": 1785432847.2711797,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -114,14 +114,14 @@ Experiment index. Filter with ?query=, ?tag=, ?kind=.
 ```json
 [
  {
-  "experiment_id": "20260729-231057-b15557",
-  "name": "low VHF/UHF survey after AD9364 unlock",
-  "objective": "receive-only occupancy survey 70.0-330.0 MHz",
+  "experiment_id": "20260730-133232-c9712a",
+  "name": "after repatch",
+  "objective": "receive-only occupancy survey 2400.0-2450.0 MHz",
   "owner": "",
   "tags": [],
   "kind": "survey",
-  "started_at": 1785381057.2250009,
-  "ended_at": 1785381086.6461349,
+  "started_at": 1785432752.3690584,
+  "ended_at": 1785432755.1448505,
   "status": "finalized",
   "num_segments": 0,
   "derived": [
@@ -131,38 +131,40 @@ Experiment index. Filter with ?query=, ?tag=, ?kind=.
   "parent": null
  },
  {
-  "experiment_id": "20260729-230824-8ca7f0",
-  "name": "low VHF/UHF survey after AD9364 unlock",
-  "objective": "receive-only occupancy survey 46.9-330.0 MHz",
+  "experiment_id": "20260730-133229-ddf51c",
+  "name": "WiFi band check via LPDA",
+  "objective": "receive-only occupancy survey 2400.0-2450.0 MHz",
   "owner": "",
   "tags": [],
   "kind": "survey",
-  "started_at": 1785380904.3921075,
-  "ended_at": null,
-  "status": "in_progress",
-  "num_segments": 0,
-  "derived": [],
-  "device": "pluto-usb:",
-  "parent": null
- },
- {
-  "experiment_id": "20260729-181324-ce39e4",
-  "name": "band survey",
-  "objective": "receive-only occupancy survey 400.0-3000.0 MHz",
-  "owner": "",
-  "tags": [],
-  "kind": "survey",
-  "started_at": 1785363204.3423555,
-  "ended_at": 1785363205.2740297,
+  "started_at": 1785432749.6517832,
+  "ended_at": 1785432752.357948,
   "status": "finalized",
   "num_segments": 0,
   "derived": [
    "band_survey"
   ],
-  "device": "sim-pluto-0",
+  "device": "pluto-usb:",
   "parent": null
  },
- "... 20 total"
+ {
+  "experiment_id": "20260730-122804-4fd302",
+  "name": "log-periodic + 10ft cable, RX-only discovery sweep",
+  "objective": "receive-only occupancy survey 100.0-3000.0 MHz",
+  "owner": "",
+  "tags": [],
+  "kind": "survey",
+  "started_at": 1785428884.7738934,
+  "ended_at": 1785428990.029126,
+  "status": "finalized",
+  "num_segments": 0,
+  "derived": [
+   "band_survey"
+  ],
+  "device": "pluto-usb:",
+  "parent": null
+ },
+ "... 23 total"
 ]
 ```
 
@@ -230,15 +232,26 @@ RF component inventory.
   ]
  },
  {
-  "component_id": "abecc2b819",
+  "component_id": "1baed4307e",
   "kind": "antenna",
-  "name": "telescoping whip (RX1)",
-  "connector": "SMA",
-  "claimed_band": "~80-375 MHz when extended (quarter-wave)",
-  "polarization": "linear, vertical when upright",
-  "created_at": 1785380891.2832947,
+  "name": "blue triangle long periodic",
+  "connector": "",
+  "claimed_band": "",
+  "polarization": "",
+  "created_at": 1785428616.7621756,
   "has_vna": false
- }
+ },
+ {
+  "component_id": "2205b245a2",
+  "kind": "cable",
+  "name": "long skinny cable",
+  "connector": "",
+  "claimed_band": "",
+  "polarization": "",
+  "created_at": 1785428596.1889236,
+  "has_vna": false
+ },
+ "... 4 total"
 ]
 ```
 
@@ -250,18 +263,34 @@ Declared cable/adapter chain, recorded with every experiment.
 {
  "declared": {
   "tx_ids": [],
-  "rx_ids": [],
+  "rx_ids": [
+   "2205b245a2"
+  ],
   "antenna_tx": "",
-  "antenna_rx": ""
+  "antenna_rx": "1baed4307e"
  },
  "resolved": {
   "tx_path": [],
-  "rx_path": [],
+  "rx_path": [
+   {
+    "component_id": "2205b245a2",
+    "kind": "cable",
+    "name": "long skinny cable",
+    "connector": "",
+    "nominal_loss_db": null,
+    "nominal_delay_ns": null
+   }
+  ],
   "antenna_tx": "",
-  "antenna_rx": "",
+  "antenna_rx": "1baed4307e",
   "total_loss_db": 0.0,
   "total_delay_ns": 0.0,
-  "components_without_characterisation": []
+  "components_without_characterisation": [
+   "long skinny cable"
+  ],
+  "note": "Totals exclude components with no measured loss or delay; the real path loss and delay are higher than shown.",
+  "config_id": "83ac246b0b",
+  "config_name": "bench: LPDA + 10ft on RX"
  }
 }
 ```
@@ -368,7 +397,7 @@ Configured narration endpoints.
     "google/gemma-4-e4b",
     "... 4 total"
    ],
-   "latency_s": 0.02,
+   "latency_s": 0.04,
    "error": ""
   }
  }
@@ -539,6 +568,11 @@ untyped object, so they are documented here.
 | POST | `/api/calibration/{device_id}/background` | Background ⚠️ transmits |
 | POST | `/api/calibration/{device_id}/cable_delay` | Cable Delay |
 | POST | `/api/capture` | Capture |
+| GET | `/api/chains` | Chain Configs |
+| POST | `/api/chains` | Save Chain Config |
+| GET | `/api/chains/{config_id}` | Chain Config |
+| POST | `/api/chains/{config_id}/activate` | Activate Chain Config |
+| POST | `/api/chains/{config_id}/delete` | Delete Chain Config |
 | GET | `/api/components` | Components |
 | POST | `/api/components` | Create Component |
 | GET | `/api/components/{comp_id}` | Component |

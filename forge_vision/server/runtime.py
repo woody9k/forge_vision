@@ -29,6 +29,7 @@ from ..positioning import (ManualSource, PositionSample, ReplaySource,
 from ..imaging.bscan import BScanBuilder
 from ..imaging.migration import focused_targets, migrate_bscan
 from ..reports import site_report
+from ..rfcomponents.chains import ChainStore
 from ..rfcomponents.store import ComponentStore
 from ..safety import SafetyController
 from ..sage.narrate import EndpointStore
@@ -83,6 +84,7 @@ class Runtime:
         os.makedirs(self.data_dir, exist_ok=True)
         self.store = ExperimentStore(os.path.join(self.data_dir, "experiments"))
         self.components = ComponentStore(os.path.join(self.data_dir, "components"))
+        self.chains = ChainStore(os.path.join(self.data_dir, "chains"))
         self.sites = SiteStore(os.path.join(self.data_dir, "sites"))
         self.llm = EndpointStore(os.path.join(self.data_dir, "llm_endpoints.json"))
         self.llm.load()
@@ -93,8 +95,6 @@ class Runtime:
         self.calibration: dict[str, dict] = {}       # device_id -> assets
         self.scans: dict[str, dict] = {}             # scan experiment_id -> session
         self.jobs = JobManager()                     # FR-API-003
-        self.rf_chain: dict = {"tx_ids": [], "rx_ids": [],
-                               "antenna_tx": "", "antenna_rx": ""}
         self.position_source = ManualSource()        # FR-POS-001 default
         self._register(SimulatedPluto("sim-pluto-0"))
         self._discover_hardware()
@@ -990,9 +990,30 @@ class Runtime:
                                     "rx_gain_db": rx_gain_db}}],
              "fingerprint": "band_survey-1.0"}, [])
         self.store.finalize(exp_id)
+        # A survey run through a saved configuration is a measurement OF that
+        # configuration — that is what makes it re-measurable later.
+        self._record_chain_measurement(exp_id, "survey", {
+            "start_hz": start_hz, "stop_hz": stop_hz,
+            "median_noise_floor_dbfs": product["median_noise_floor_dbfs"],
+            "busiest_hz": busiest["center_hz"],
+            "busiest_peak_above_floor_db": busiest["peak_above_floor_db"],
+        })
         self.safety.audit("band_survey", device=device_id, start_hz=start_hz,
                           stop_hz=stop_hz, steps=steps, experiment=exp_id)
         return {"experiment_id": exp_id, **product}
+
+    def _record_chain_measurement(self, exp_id: str, kind: str,
+                                  summary: dict) -> None:
+        """Attach a measurement to the active configuration, if one is active
+        and the patching still matches it. A reading taken through an edited
+        chain is not a measurement of the saved configuration (FR-RFC-007)."""
+        w = self.chains.working()
+        if not w["config_id"] or w["modified"]:
+            return
+        try:
+            self.chains.record_measurement(w["config_id"], exp_id, kind, summary)
+        except FileNotFoundError:
+            pass
 
     # -- simulator control ---------------------------------------------------
     def set_sim_scene(self, device_id: str, preset: str = "",
@@ -1110,19 +1131,73 @@ class Runtime:
         status["kind"] = src.name
         return status
 
+    @property
+    def rf_chain(self) -> dict:
+        """The working chain. Persisted, so it survives a restart."""
+        w = self.chains.working()
+        return {k: w[k] for k in ("tx_ids", "rx_ids", "antenna_tx", "antenna_rx")}
+
     def set_rf_chain(self, tx_ids=None, rx_ids=None, antenna_tx: str = "",
                      antenna_rx: str = "") -> dict:
         """Declare the cable/adapter chain currently patched up (FR-RFC-006)."""
-        self.rf_chain = {"tx_ids": list(tx_ids or []),
-                         "rx_ids": list(rx_ids or []),
-                         "antenna_tx": antenna_tx, "antenna_rx": antenna_rx}
+        self.chains.set_working(tx_ids, rx_ids, antenna_tx, antenna_rx)
         self.safety.audit("rf_chain_declared", **self.rf_chain)
         return self.current_chain()
 
     def current_chain(self) -> dict:
-        c = self.rf_chain
-        return self.components.describe_chain(
-            c["tx_ids"], c["rx_ids"], c["antenna_tx"], c["antenna_rx"])
+        """Resolve the working chain for the experiment record.
+
+        Carries the saved configuration it came from, and whether it still
+        matches it. A capture taken after the operator edited the patching
+        must not read as though it came from the pristine named configuration
+        (FR-RFC-007).
+        """
+        w = self.chains.working()
+        chain = self.components.describe_chain(
+            w["tx_ids"], w["rx_ids"], w["antenna_tx"], w["antenna_rx"])
+        chain["config_id"] = w["config_id"]
+        chain["config_name"] = w["config_name"]
+        if w["modified"]:
+            chain["config_modified"] = True
+            chain["note"] = (chain.get("note", "") + " " if chain.get("note") else "") + (
+                f"Patched chain differs from saved configuration "
+                f"{w['config_name']!r}; it is not that configuration.")
+        return chain
+
+    # -- saved chain configurations (FR-RFC-006) ------------------------------
+    def list_chain_configs(self) -> list[dict]:
+        return self.chains.list()
+
+    def save_chain_config(self, name: str, notes: str = "") -> dict:
+        cfg = self.chains.save_working_as(name, notes=notes)
+        self.safety.audit("chain_config_saved", config_id=cfg["config_id"],
+                          name=cfg["name"])
+        return cfg
+
+    def activate_chain_config(self, config_id: str) -> dict:
+        cfg = self.chains.activate(config_id)
+        self.safety.audit("chain_config_activated", config_id=config_id,
+                          name=cfg["name"])
+        return self.current_chain()
+
+    def delete_chain_config(self, config_id: str) -> dict:
+        self.chains.delete(config_id)
+        return {"deleted": config_id}
+
+    def chain_config_measurements(self, config_id: str) -> dict:
+        """A configuration plus the measurements taken with it."""
+        cfg = self.chains.load(config_id)
+        out = []
+        for m in cfg.get("measurements", []):
+            try:
+                man = self.store.load(m["experiment_id"])
+            except FileNotFoundError:
+                # The capture was deleted; say so rather than dropping it.
+                out.append({**m, "missing": True})
+                continue
+            out.append({**m, "name": man["identity"].get("name", ""),
+                        "created_at": man["identity"].get("created_at")})
+        return {**cfg, "measurements": out}
 
     def _describe_device(self, dev) -> dict:
         d = dev.describe()

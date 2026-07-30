@@ -52,17 +52,11 @@
         <div id="job-list"></div>
       </div>
       <div class="panel">
-        <h2>RF chain <span class="mut">— recorded with every experiment</span></h2>
-        <div class="toolbar">
-          <label>TX antenna <select id="chain-antenna-tx"></select></label>
-          <label>RX antenna <select id="chain-antenna-rx"></select></label>
-        </div>
-        <div class="toolbar">
-          <label>TX path <select id="chain-tx" multiple size="3"></select></label>
-          <label>RX path <select id="chain-rx" multiple size="3"></select></label>
-          <button id="chain-save">Declare chain</button>
-        </div>
+        <h2>Active RF chain <span class="mut">— recorded with every experiment</span></h2>
         <div id="chain-summary" class="mut"></div>
+        <p class="mut" style="margin:6px 0 0">
+          Manage antennas, cables and saved configurations in
+          <a href="#" data-goto="antenna">Antenna Lab</a>.</p>
         <h2 style="margin-top:12px">Receive-path protection</h2>
         <div class="toolbar">
           <label>Declared path attenuation (dB)
@@ -358,6 +352,34 @@
         <span class="mut">(dashed, right axis)</span>
         <span class="mut" id="antenna-meta"></span></h2>
       <canvas id="vna-plot" width="1280" height="320"></canvas>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h2>Chain configuration
+          <span class="mut">— what every reading passes through</span></h2>
+        <div class="toolbar">
+          <label>TX antenna <select id="chain-antenna-tx"></select></label>
+          <label>RX antenna <select id="chain-antenna-rx"></select></label>
+        </div>
+        <div class="toolbar">
+          <label>TX path <select id="chain-tx" multiple size="3"></select></label>
+          <label>RX path <select id="chain-rx" multiple size="3"></select></label>
+          <button id="chain-save">Apply</button>
+        </div>
+        <div id="chain-detail" class="mut"></div>
+        <div class="toolbar" style="margin-top:8px">
+          <input id="chain-config-name" type="text" size="22"
+                 placeholder="name this configuration…">
+          <button id="chain-config-save" class="primary">Save configuration</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Saved configurations <span class="mut">— activate to reuse</span></h2>
+        <div id="chain-config-list"></div>
+        <h2 style="margin-top:12px">Measurements of the active configuration</h2>
+        <div id="chain-measurements" class="mut"></div>
+      </div>
     </div>
   </section>
 

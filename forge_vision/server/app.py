@@ -197,6 +197,48 @@ def set_rf_chain(body: S.RfChainRequest):
         raise _fail(exc)
 
 
+# -- saved chain configurations (FR-RFC-006) ----------------------------------
+@app.get("/api/chains")
+def chain_configs():
+    """Saved antenna/cable configurations; one is active."""
+    return runtime.list_chain_configs()
+
+
+@app.post("/api/chains")
+def save_chain_config(body: S.ChainConfigRequest):
+    """Save the working chain under a name and make it active."""
+    try:
+        return runtime.save_chain_config(body.name, notes=body.notes)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/chains/{config_id}")
+def chain_config(config_id: str):
+    """A configuration plus every measurement taken with it."""
+    try:
+        return runtime.chain_config_measurements(config_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/chains/{config_id}/activate")
+def activate_chain_config(config_id: str):
+    """Make this configuration the baseline for subsequent work."""
+    try:
+        return runtime.activate_chain_config(config_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/chains/{config_id}/delete")
+def delete_chain_config(config_id: str):
+    try:
+        return runtime.delete_chain_config(config_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- receive-path protection (FR-SAF-005/006) ---------------------------------
 @app.get("/api/safety/rx_protection")
 def rx_protection(device_id: str = "sim-pluto-0"):

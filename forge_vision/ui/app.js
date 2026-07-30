@@ -205,12 +205,75 @@ async function refreshChain() {
     const c2 = comps.find((x) => x.component_id === id);
     return c2 ? esc(c2.name) : "—";
   };
-  $("chain-summary").innerHTML =
+  const label = c.config_name
+    ? `<b>${esc(c.config_name)}</b>${c.config_modified ? " <span style=\"color:#e8c96a\">(modified)</span>" : ""}`
+    : "<span class=\"mut\">unsaved chain</span>";
+  const body =
+    `${label}<br>` +
     `TX: ${named(c.antenna_tx)} ← ${c.tx_path.map((x) => esc(x.name)).join(" ← ") || "—"}<br>` +
     `RX: ${named(c.antenna_rx)} → ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>` +
     `total nominal loss ${c.total_loss_db} dB, delay ${c.total_delay_ns} ns` +
     (c.note ? `<br><span style="color:#e8c96a">${esc(c.note)}</span>` : "");
+  for (const id of ["chain-summary", "chain-detail"]) {
+    if ($(id)) $(id).innerHTML = body;
+  }
+  await refreshChainConfigs();
 }
+
+async function refreshChainConfigs() {
+  if (!$("chain-config-list")) return;
+  let list;
+  try { list = await api("/api/chains"); } catch (e) { return; }
+  $("chain-config-list").innerHTML = list.map((c) => `
+    <div class="row${c.active ? " on" : ""}">
+      <span>${c.active ? "● " : ""}${esc(c.name)}
+        <span class="mut">${c.measurement_count} measurement${
+          c.measurement_count === 1 ? "" : "s"}</span></span>
+      <span>
+        <button onclick="activateChain('${esc(c.config_id)}')"${
+          c.active ? " disabled" : ""}>Activate</button>
+        <button onclick="deleteChain('${esc(c.config_id)}')">Delete</button>
+      </span>
+    </div>`).join("") ||
+    '<span class="mut">no saved configurations yet — patch a chain, then name and save it</span>';
+
+  const active = list.find((c) => c.active);
+  if (!active) {
+    $("chain-measurements").innerHTML =
+      '<span class="mut">activate a configuration to see its measurements</span>';
+    return;
+  }
+  const detail = await api(`/api/chains/${active.config_id}`);
+  $("chain-measurements").innerHTML = (detail.measurements || []).map((m) => {
+    if (m.missing) {
+      return `<div class="row"><span>${esc(m.experiment_id)}</span>
+        <span style="color:#e8c96a">capture deleted</span></div>`;
+    }
+    const s = m.summary || {};
+    const band = s.start_hz
+      ? `${(s.start_hz / 1e6).toFixed(0)}–${(s.stop_hz / 1e6).toFixed(0)} MHz`
+      : "";
+    const floor = s.median_noise_floor_dbfs !== undefined
+      ? `median floor ${s.median_noise_floor_dbfs} dBFS` : "";
+    return `<div class="row">
+      <span><a href="#" onclick="openLibrary('${esc(m.experiment_id)}');return false">${
+        esc(m.kind || "measurement")}</a>
+        <span class="mut">${esc(band)}</span></span>
+      <span class="mut">${esc(floor)}</span></div>`;
+  }).join("") ||
+    '<span class="mut">no measurements yet — run a band survey with this configuration active</span>';
+}
+
+window.activateChain = async (id) => {
+  await api(`/api/chains/${id}/activate`, { method: "POST" });
+  refreshChain();
+};
+
+window.deleteChain = async (id) => {
+  if (!confirm("Delete this configuration? Measurements taken with it are kept.")) return;
+  await api(`/api/chains/${id}/delete`, { method: "POST" });
+  refreshChain();
+};
 
 $("chain-save").onclick = async () => {
   const pick = (id) => [...$(id).selectedOptions].map((o) => o.value);
@@ -222,6 +285,26 @@ $("chain-save").onclick = async () => {
     antenna_rx: $("chain-antenna-rx").value } });
   refreshChain();
 };
+
+$("chain-config-save").onclick = async () => {
+  const name = $("chain-config-name").value.trim();
+  if (!name) { alert("Give the configuration a name so it can be reused."); return; }
+  try {
+    await api("/api/chains", { method: "POST", body: { name } });
+  } catch (e) {
+    alert(`Could not save: ${e.message || e}`); return;
+  }
+  $("chain-config-name").value = "";
+  refreshChain();
+};
+
+// "manage them in Antenna Lab" link on the dashboard
+document.querySelectorAll("[data-goto]").forEach((a) => {
+  a.onclick = (ev) => {
+    ev.preventDefault();
+    document.querySelector(`nav button[data-tab="${a.dataset.goto}"]`).click();
+  };
+});
 
 $("atten-save").onclick = async () => {
   await api("/api/safety/path_attenuation", { method: "POST",
@@ -1489,6 +1572,7 @@ let pinnedComp = null;          // second trace for comparison
 const TRACE_COLORS = ["#35c4a2", "#4aa3ff"];
 
 async function refreshComponents() {
+  refreshChain();
   const list = await api("/api/components");
   $("comp-list").innerHTML = list.map((c) => `
     <div class="expitem ${selectedComp === c.component_id ? "sel" : ""}"
