@@ -20,6 +20,74 @@ class SafetyViolation(Exception):
     pass
 
 
+# Receive-path protection (FR-SAF-005). A Pluto's RX input is damaged above
+# roughly +2.5 dBm and compresses well before that; the ADC saturates when
+# the input plus RX gain exceeds full scale. Transmit output is about
+# +7 dBm at 0 dB gain, and tx_hardwaregain is attenuation from there.
+#
+# The dangerous case is a direct TX->RX cable with no attenuator, which puts
+# the full transmit power into the receiver. These numbers are deliberately
+# conservative: they are meant to stop an expensive mistake, not to model the
+# front end precisely.
+PLUTO_TX_MAX_OUTPUT_DBM = 7.0
+RX_DAMAGE_DBM = -10.0        # stay well below the absolute maximum
+RX_COMPRESSION_DBM = -25.0   # above this the front end is no longer linear
+RX_FULL_SCALE_DBM = -30.0    # input + gain beyond this saturates the ADC
+
+
+def rx_protection_check(tx_gain_db: float, rx_gain_db: float,
+                        path_attenuation_db: float,
+                        tx_max_output_dbm: float = PLUTO_TX_MAX_OUTPUT_DBM) -> dict:
+    """Assess whether a configuration would overdrive the receive path.
+
+    `path_attenuation_db` is what the operator has declared sits between the
+    transmit and receive ports: inline attenuators plus antenna isolation.
+    Zero means a bare cable, which is the case worth shouting about.
+    """
+    tx_output_dbm = tx_max_output_dbm + min(0.0, tx_gain_db)
+    rx_input_dbm = tx_output_dbm - max(0.0, path_attenuation_db)
+    after_gain_dbm = rx_input_dbm + rx_gain_db
+
+    warnings, severity = [], "ok"
+    if rx_input_dbm >= RX_DAMAGE_DBM:
+        severity = "critical"
+        warnings.append(
+            f"Estimated {rx_input_dbm:.1f} dBm at the receive port — at or "
+            f"above the {RX_DAMAGE_DBM:.0f} dBm damage threshold. Add at "
+            f"least {rx_input_dbm - RX_DAMAGE_DBM + 10:.0f} dB of attenuation "
+            "before transmitting.")
+    elif rx_input_dbm >= RX_COMPRESSION_DBM:
+        severity = "warn"
+        warnings.append(
+            f"Estimated {rx_input_dbm:.1f} dBm at the receive port. The front "
+            "end will compress, so amplitudes and ranges derived from this "
+            "capture will not be trustworthy.")
+    if after_gain_dbm >= RX_FULL_SCALE_DBM and severity != "critical":
+        severity = "warn" if severity == "ok" else severity
+        warnings.append(
+            f"Receive gain of {rx_gain_db:.0f} dB puts the signal "
+            f"{after_gain_dbm - RX_FULL_SCALE_DBM:.0f} dB past ADC full "
+            "scale; expect clipping. Reduce RX gain.")
+    if path_attenuation_db <= 0:
+        warnings.append(
+            "No path attenuation is declared. If transmit is cabled straight "
+            "to receive, this will damage the receiver.")
+        severity = "critical" if severity != "critical" else severity
+
+    return {
+        "severity": severity,
+        "safe": severity == "ok",
+        "tx_output_dbm": round(tx_output_dbm, 1),
+        "rx_input_dbm": round(rx_input_dbm, 1),
+        "rx_after_gain_dbm": round(after_gain_dbm, 1),
+        "path_attenuation_db": path_attenuation_db,
+        "warnings": warnings,
+        "thresholds": {"damage_dbm": RX_DAMAGE_DBM,
+                       "compression_dbm": RX_COMPRESSION_DBM,
+                       "adc_full_scale_dbm": RX_FULL_SCALE_DBM},
+    }
+
+
 # Pre-transmit operator checklist (FR-SAF-009). These are the questions a
 # bench operator should be forced to answer before any RF leaves the board.
 # `required` items block arming; advisory items are recorded but do not gate.
@@ -71,6 +139,21 @@ class SafetyController:
         os.makedirs(os.path.dirname(audit_path), exist_ok=True)
         self.checklist = [dict(item, confirmed=False)
                           for item in DEFAULT_CHECKLIST]
+        # what the operator says is in the TX->RX path (FR-SAF-006)
+        self.path_attenuation_db = 0.0
+
+    def declare_path_attenuation(self, db: float) -> dict:
+        """Record the attenuation/isolation the operator has in the path."""
+        if db < 0:
+            raise SafetyViolation("path attenuation cannot be negative")
+        self.path_attenuation_db = float(db)
+        self.audit("path_attenuation_declared", attenuation_db=db)
+        return {"path_attenuation_db": self.path_attenuation_db}
+
+    def rx_protection(self, tx_gain_db: float, rx_gain_db: float) -> dict:
+        """Assess the receive path for the given radio settings (FR-SAF-005)."""
+        return rx_protection_check(tx_gain_db, rx_gain_db,
+                                   self.path_attenuation_db)
 
     # -- pre-transmit checklist (FR-SAF-009) --------------------------------
     def checklist_status(self) -> dict:
@@ -136,8 +219,14 @@ class SafetyController:
         self.audit("tx_disarmed", reason=reason)
 
     # -- validation --------------------------------------------------------
-    def validate_tx(self, center_frequency_hz: float, waveform, tx_gain_db: float) -> None:
-        """Enforce limits before transmit is enabled (FR-SAF-004, FR-SAF-007)."""
+    def validate_tx(self, center_frequency_hz: float, waveform, tx_gain_db: float,
+                    rx_gain_db: float | None = None,
+                    enforce_rx_protection: bool = True) -> None:
+        """Enforce limits before transmit is enabled (FR-SAF-004, FR-SAF-007).
+
+        Also refuses a configuration that would put damaging power into the
+        receiver (FR-SAF-005/006) — the failure mode that costs hardware.
+        """
         lims = self.limits
         if not self.state.armed:
             raise SafetyViolation("transmit interlock is not armed for this session")
@@ -159,6 +248,22 @@ class SafetyController:
             raise SafetyViolation(
                 f"frequency {center_frequency_hz:.4g} Hz not inside active profile "
                 f"'{self.limits.active_profile}'")
+        if rx_gain_db is not None:
+            check = self.rx_protection(tx_gain_db, rx_gain_db)
+            if check["severity"] == "critical":
+                if enforce_rx_protection:
+                    self.audit("tx_blocked_rx_protection",
+                               rx_input_dbm=check["rx_input_dbm"],
+                               path_attenuation_db=check["path_attenuation_db"])
+                    raise SafetyViolation(
+                        "receive path protection: " + " ".join(check["warnings"]))
+                # a simulated receiver cannot be damaged, so the same
+                # configuration is recorded rather than refused — the operator
+                # still sees what it would have meant on real hardware
+                self.audit("rx_protection_warning_not_enforced",
+                           rx_input_dbm=check["rx_input_dbm"],
+                           path_attenuation_db=check["path_attenuation_db"],
+                           warnings=check["warnings"])
 
     # -- tx state tracking -------------------------------------------------
     def notify_tx_started(self, device_id: str, **detail) -> None:
@@ -195,4 +300,5 @@ class SafetyController:
                 "tx_active_devices": sorted(self.state.tx_active_devices),
                 "limits": self.limits.to_dict(),
                 "checklist": self.checklist_status(),
+                "path_attenuation_db": self.path_attenuation_db,
             }

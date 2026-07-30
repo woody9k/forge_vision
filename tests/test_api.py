@@ -259,3 +259,54 @@ def test_sage_api_milestone_e(client):
     assert client.get(f"/api/sage/site/{sid}/recommend").status_code == 200
     assert client.get(f"/api/sage/experiment/{scans[0]}").status_code == 200
     assert client.get(f"/api/sage/site/{sid}/finding/99").status_code == 404
+
+
+def test_job_api_lifecycle(client):
+    """FR-API-003 over HTTP: submit, monitor, inspect, cancel, retry."""
+    import time
+    client.post("/api/devices/sim-pluto-0/connect")
+    r = client.post("/api/jobs", json={"kind": "survey", "params": {
+        "device_id": "sim-pluto-0", "start_hz": 902e6, "stop_hz": 908e6,
+        "step_hz": 2e6, "samples": 8192}})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+
+    deadline = time.time() + 60
+    state = "queued"
+    while time.time() < deadline:
+        state = client.get(f"/api/jobs/{job_id}").json()["state"]
+        if state in ("succeeded", "failed", "cancelled"):
+            break
+        time.sleep(0.05)
+    assert state == "succeeded"
+
+    full = client.get(f"/api/jobs/{job_id}?include_result=true").json()
+    assert full["result"]["points"]
+
+    listing = client.get("/api/jobs").json()
+    assert listing["summary"].get("succeeded") == 1
+    assert client.post(f"/api/jobs/{job_id}/retry").status_code == 200
+    assert client.get("/api/jobs/nope").status_code == 404
+    assert client.post("/api/jobs", json={"kind": "bogus"}).status_code == 404
+
+
+def test_rx_protection_and_chain_api(client):
+    client.post("/api/devices/sim-pluto-0/connect")
+    r = client.post("/api/safety/path_attenuation", json={"attenuation_db": 0})
+    assert r.json()["path_attenuation_db"] == 0
+    check = client.get("/api/safety/rx_protection?device_id=sim-pluto-0").json()
+    assert check["severity"] in ("warn", "critical")
+    assert check["warnings"]
+
+    client.post("/api/safety/path_attenuation", json={"attenuation_db": 40})
+    client.post("/api/devices/sim-pluto-0/configure",
+                json={"tx_gain_db": -30, "rx_gain_db": 20})
+    assert client.get("/api/safety/rx_protection?device_id=sim-pluto-0"
+                      ).json()["safe"] is True
+
+    cable = client.post("/api/components", json={
+        "kind": "cable", "name": "test cable", "nominal_loss_db": 1.0,
+        "nominal_delay_ns": 5.0}).json()
+    r = client.post("/api/rf_chain", json={"tx_ids": [cable["component_id"]]})
+    assert r.json()["total_loss_db"] == 1.0
+    assert client.get("/api/rf_chain").json()["resolved"]["tx_path"]

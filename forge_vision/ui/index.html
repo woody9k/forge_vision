@@ -46,6 +46,28 @@
         <div id="system-info"></div>
       </div>
     </div>
+    <div class="grid2">
+      <div class="panel">
+        <h2>Processing queue</h2>
+        <div id="job-list"></div>
+      </div>
+      <div class="panel">
+        <h2>RF chain <span class="mut">— recorded with every experiment</span></h2>
+        <div class="toolbar">
+          <label>TX path <select id="chain-tx" multiple size="3"></select></label>
+          <label>RX path <select id="chain-rx" multiple size="3"></select></label>
+          <button id="chain-save">Declare chain</button>
+        </div>
+        <div id="chain-summary" class="mut"></div>
+        <h2 style="margin-top:12px">Receive-path protection</h2>
+        <div class="toolbar">
+          <label>Declared path attenuation (dB)
+            <input id="atten-db" type="number" value="0" step="5" style="width:80px"></label>
+          <button id="atten-save">Declare</button>
+        </div>
+        <div id="rx-protection"></div>
+      </div>
+    </div>
     <div class="panel">
       <h2>Recent experiments</h2>
       <div id="recent-experiments"></div>
@@ -104,6 +126,12 @@
       <button id="range-bg">Capture background</button>
       <button id="range-run" class="primary">Run ranging</button>
       <span id="range-status" class="mut"></span>
+    </div>
+    <div class="toolbar">
+      <label>Overlay prior run <select id="range-prior"><option value="">none</option></select></label>
+      <button id="range-prior-load">Overlay</button>
+      <button id="range-prior-clear">Clear</button>
+      <span class="mut">grey = raw before subtraction · blue = the selected prior run</span>
     </div>
     <div id="range-cal" class="calbanner"></div>
     <div class="panel">

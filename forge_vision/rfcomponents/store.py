@@ -86,6 +86,49 @@ class ComponentStore:
             out.append(summary)
         return out
 
+    def describe_chain(self, tx_ids: list, rx_ids: list,
+                       antenna_tx: str = "", antenna_rx: str = "") -> dict:
+        """Resolve a connector chain for the experiment record (FR-RFC-006).
+
+        Stores the exact components in each path, not just their names, and
+        totals their nominal loss and delay where those are known — a chain
+        with an unmeasured adapter should not silently read as lossless
+        (FR-RFC-007).
+        """
+        def resolve(ids):
+            out, loss, delay, unknown = [], 0.0, 0.0, []
+            for cid in ids or []:
+                try:
+                    c = self.load(cid)
+                except FileNotFoundError:
+                    unknown.append(cid)
+                    continue
+                out.append({k: c.get(k) for k in
+                            ("component_id", "kind", "name", "connector",
+                             "nominal_loss_db", "nominal_delay_ns")})
+                if c.get("nominal_loss_db") is None or \
+                        c.get("nominal_delay_ns") is None:
+                    unknown.append(c["name"])
+                loss += c.get("nominal_loss_db") or 0.0
+                delay += c.get("nominal_delay_ns") or 0.0
+            return out, loss, delay, unknown
+
+        tx, tx_loss, tx_delay, tx_unknown = resolve(tx_ids)
+        rx, rx_loss, rx_delay, rx_unknown = resolve(rx_ids)
+        chain = {
+            "tx_path": tx, "rx_path": rx,
+            "antenna_tx": antenna_tx, "antenna_rx": antenna_rx,
+            "total_loss_db": round(tx_loss + rx_loss, 2),
+            "total_delay_ns": round(tx_delay + rx_delay, 3),
+            "components_without_characterisation":
+                sorted(set(tx_unknown + rx_unknown)),
+        }
+        if chain["components_without_characterisation"]:
+            chain["note"] = (
+                "Totals exclude components with no measured loss or delay; "
+                "the real path loss and delay are higher than shown.")
+        return chain
+
     def import_vna(self, comp_id: str, text: str, filename: str = "") -> dict:
         """Attach a touchstone measurement and derived analysis (FR-RFC-003/004)."""
         comp = self.load(comp_id)
