@@ -26,6 +26,7 @@ from ..imaging.migration import focused_targets, migrate_bscan
 from ..reports import site_report
 from ..rfcomponents.store import ComponentStore
 from ..safety import SafetyController
+from ..sage.narrate import EndpointStore
 from ..sites import SiteStore, depth_slice, fuse_targets, scan_path
 from ..waveforms import CATALOG
 
@@ -78,6 +79,8 @@ class Runtime:
         self.store = ExperimentStore(os.path.join(self.data_dir, "experiments"))
         self.components = ComponentStore(os.path.join(self.data_dir, "components"))
         self.sites = SiteStore(os.path.join(self.data_dir, "sites"))
+        self.llm = EndpointStore(os.path.join(self.data_dir, "llm_endpoints.json"))
+        self.llm.load()
         self.safety = SafetyController(
             SafetyLimits(), os.path.join(self.data_dir, "logs", "safety_audit.jsonl"))
         self.devices: dict[str, object] = {}
@@ -647,21 +650,84 @@ class Runtime:
                 "findings": scene["findings"], "errors": scene["errors"]}
 
     # -- SAGE assistance (release 0.5, §8) -----------------------------------
+    def _narrate(self, answer: dict, narrate: bool = True) -> dict:
+        """Optionally add LLM prose over the facts. Never changes the facts."""
+        if not narrate:
+            return answer
+        from ..sage.narrate import narrate as add_narration
+        return add_narration(answer, self.llm.active())
+
     def sage_ask(self, question: str, site_id: str = "",
-                 experiment_id: str = "") -> dict:
+                 experiment_id: str = "", narrate: bool = False) -> dict:
         """Answer a grounded question. Read-only by construction (FR-AI-008):
-        this path has no way to enable transmission or change any setting."""
+        this path has no way to enable transmission or change any setting.
+
+        Narration is off by default and fetched separately: a local model can
+        take 30 s to 2 minutes to rephrase a handful of facts, and the
+        instrument's own answer must never wait on it.
+        """
         from ..sage.query import ask
         scene = self.site_scene(site_id) if site_id else None
-        return ask(question, store=self.store, scene=scene,
-                   experiment_id=experiment_id)
+        out = ask(question, store=self.store, scene=scene,
+                  experiment_id=experiment_id)
+        out["narration_available"] = self.llm.active() is not None
+        return self._narrate(out, narrate)
+
+    def sage_narrate(self, answer: dict) -> dict:
+        """Narrate an answer produced earlier. Returns only the narration
+        block, so a slow model never blocks the findings."""
+        active = self.llm.active()
+        if active is None:
+            return {"available": False,
+                    "error": "no language model endpoint is enabled",
+                    "note": "The findings are the instrument's own output and "
+                            "do not depend on a model."}
+        return self._narrate(answer, True).get("narration", {"available": False})
+
+    # -- LLM endpoints (optional narration layer) ----------------------------
+    def llm_list(self) -> dict:
+        from ..sage.narrate import health
+        eps = self.llm.load()
+        active = self.llm.active()
+        return {"endpoints": [e.to_dict() for e in eps.values()],
+                "active": active.name if active else "",
+                "health": {active.name: health(active)} if active else {}}
+
+    def llm_put(self, spec: dict) -> dict:
+        from ..sage.narrate import LLMEndpoint
+        self.llm.load()
+        allowed = {"name", "base_url", "model", "api_key", "timeout_s",
+                   "max_tokens", "enabled"}
+        ep = LLMEndpoint(**{k: v for k, v in spec.items() if k in allowed})
+        self.llm.put(ep)
+        self.safety.audit("llm_endpoint_configured", name=ep.name,
+                          base_url=ep.base_url, model=ep.model,
+                          enabled=ep.enabled)
+        return self.llm_list()
+
+    def llm_remove(self, name: str) -> dict:
+        self.llm.load()
+        self.llm.remove(name)
+        return self.llm_list()
+
+    def llm_health(self, name: str) -> dict:
+        from ..sage.narrate import health
+        eps = self.llm.load()
+        if name not in eps:
+            raise KeyError(f"unknown endpoint: {name}")
+        return health(eps[name])
+
+    def _with_narration_flag(self, out: dict) -> dict:
+        out["narration_available"] = self.llm.active() is not None
+        return out
 
     def sage_experiment(self, experiment_id: str) -> dict:
         from ..sage.analysis import assess_experiment, summarize_experiment
         from ..sage.facts import answer
-        return answer(summarize_experiment(self.store, experiment_id)
-                      + assess_experiment(self.store, experiment_id),
-                      f"summary and quality assessment of {experiment_id}")
+        return self._with_narration_flag(answer(
+            summarize_experiment(self.store, experiment_id)
+            + assess_experiment(self.store, experiment_id),
+            f"summary and quality assessment of {experiment_id}"))
 
     def sage_explain(self, site_id: str, index: int) -> dict:
         from ..sage.analysis import explain_finding
@@ -671,20 +737,23 @@ class Runtime:
         if not 0 <= index < len(findings):
             raise KeyError(f"site has {len(findings)} finding(s); "
                            f"no #{index + 1}")
-        return answer(explain_finding(scene["site"], findings[index], index),
-                      f"why is finding #{index + 1} highlighted?")
+        return self._with_narration_flag(answer(
+            explain_finding(scene["site"], findings[index], index),
+            f"why is finding #{index + 1} highlighted?"))
 
     def sage_recommend(self, site_id: str) -> dict:
         from ..sage.analysis import recommend_next
         from ..sage.facts import answer
-        return answer(recommend_next(self.site_scene(site_id)),
-                      "what should I measure next?")
+        return self._with_narration_flag(answer(
+            recommend_next(self.site_scene(site_id)),
+            "what should I measure next?"))
 
     def sage_compare(self, a_id: str, b_id: str) -> dict:
         from ..sage.analysis import compare_experiments
         from ..sage.facts import answer
-        return answer(compare_experiments(self.store, a_id, b_id),
-                      f"compare {a_id} with {b_id}")
+        return self._with_narration_flag(answer(
+            compare_experiments(self.store, a_id, b_id),
+            f"compare {a_id} with {b_id}"))
 
     # -- band survey (receive only) ------------------------------------------
     def band_survey(self, device_id: str, start_hz: float, stop_hz: float,
