@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785432847.2711797,
+    "time": 1785446312.703704,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -104,7 +104,7 @@ Platform state: devices, safety, storage, waveforms.
     "sample_rate_hz": 61440000.0,
     "rx_bandwidth_hz": 56000000.0,
     "rx_gain_db": 40.0,
-    "tx
+    "tx_
 ```
 
 ### `GET /api/experiments`
@@ -289,6 +289,15 @@ Declared cable/adapter chain, recorded with every experiment.
    "long skinny cable"
   ],
   "note": "Totals exclude components with no measured loss or delay; the real path loss and delay are higher than shown.",
+  "band": {
+   "usable_bands": [],
+   "measured_components": [],
+   "unverified_components": [
+    "blue triangle long periodic",
+    "long skinny cable"
+   ],
+   "note": "No component in this chain has a VNA measurement, so its usable band is unknown."
+  },
   "config_id": "83ac246b0b",
   "config_name": "bench: LPDA + 10ft on RX"
  }
@@ -397,7 +406,7 @@ Configured narration endpoints.
     "google/gemma-4-e4b",
     "... 4 total"
    ],
-   "latency_s": 0.04,
+   "latency_s": 0.02,
    "error": ""
   }
  }
@@ -576,6 +585,7 @@ untyped object, so they are documented here.
 | GET | `/api/components` | Components |
 | POST | `/api/components` | Create Component |
 | GET | `/api/components/{comp_id}` | Component |
+| POST | `/api/components/{comp_id}/adopt_loss` | Adopt Measured Loss |
 | POST | `/api/components/{comp_id}/delete` | Delete Component |
 | POST | `/api/components/{comp_id}/update` | Update Component |
 | POST | `/api/components/{comp_id}/vna` | Import Vna |

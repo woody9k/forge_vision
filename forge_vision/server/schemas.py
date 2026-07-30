@@ -213,6 +213,11 @@ class RfChainRequest(Strict):
     antenna_rx: str = ""
 
 
+class AdoptLossRequest(Strict):
+    """Take nominal loss from an imported S21 sweep, at a stated frequency."""
+    freq_hz: float | None = Field(None, gt=0)
+
+
 class ChainConfigRequest(Strict):
     """Save the working chain as a reusable named configuration."""
     name: str = Field(min_length=1)

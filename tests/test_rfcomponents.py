@@ -110,3 +110,97 @@ def test_rescan_graceful_without_driver(runtime):
     if not result["driver"]["available"]:
         assert "libiio" in result["driver"]["detail"]
         assert result["added"] == []
+
+
+# -- insertion loss from a two-port sweep (FR-RFC-004) -----------------------
+S2P_CABLE = """! a lossy cable: S21 falls with frequency, as coax does
+# MHZ S RI R 50
+100  0.02 0.0  0.891 0.0  0.891 0.0  0.02 0.0
+500  0.02 0.0  0.794 0.0  0.794 0.0  0.02 0.0
+1000 0.02 0.0  0.708 0.0  0.708 0.0  0.02 0.0
+"""
+
+
+def test_s21_becomes_positive_insertion_loss():
+    from forge_vision.rfcomponents.touchstone import analyze_s21
+    d = parse_touchstone(S2P_CABLE)
+    a = analyze_s21(d["freqs_hz"], d["s21"])
+    # 0.891 linear ~= 1 dB down, 0.708 ~= 3 dB down; reported positive-as-loss
+    assert a["at_lowest"]["loss_db"] == pytest.approx(1.0, abs=0.05)
+    assert a["at_highest"]["loss_db"] == pytest.approx(3.0, abs=0.05)
+    assert a["at_lowest"]["freq_hz"] == 100e6
+    assert a["max_loss_db"] > a["min_loss_db"]
+
+
+def test_adopting_measured_loss_records_the_frequency(tmp_path):
+    """A bare loss figure with no frequency attached is not checkable, so the
+    frequency it came from is written into the notes."""
+    from forge_vision.rfcomponents.store import ComponentStore
+    store = ComponentStore(str(tmp_path / "components"))
+    c = store.create("cable", "10ft coax")
+    store.import_vna(c["component_id"], S2P_CABLE, "cable.s2p")
+
+    updated = store.adopt_measured_loss(c["component_id"], freq_hz=1000e6)
+    assert updated["nominal_loss_db"] == pytest.approx(3.0, abs=0.05)
+    assert "1000.0 MHz" in updated["notes"]
+    assert "cable.s2p" in updated["notes"]
+
+
+def test_adopting_loss_without_a_two_port_sweep_is_refused(tmp_path):
+    from forge_vision.rfcomponents.store import ComponentStore
+    store = ComponentStore(str(tmp_path / "components"))
+    c = store.create("antenna", "whip")
+    store.import_vna(c["component_id"], S1P_RI, "ant.s1p")
+    with pytest.raises(ValueError, match="no two-port"):
+        store.adopt_measured_loss(c["component_id"])
+
+
+# -- chain usable band (FR-RFC-004) ------------------------------------------
+def _antenna(store, name, s1p):
+    c = store.create("antenna", name)
+    store.import_vna(c["component_id"], s1p, f"{name}.s1p")
+    return c["component_id"]
+
+
+NARROW = """# MHZ S RI R 50
+700  0.9 0.0
+800  0.05 0.0
+900  0.05 0.0
+1000 0.9 0.0
+"""
+WIDE = """# MHZ S RI R 50
+700  0.05 0.0
+800  0.05 0.0
+900  0.05 0.0
+1000 0.9 0.0
+"""
+
+
+def test_chain_band_is_the_intersection_of_its_parts(tmp_path):
+    """A series path is only usable where every measured part is."""
+    from forge_vision.rfcomponents.store import ComponentStore
+    store = ComponentStore(str(tmp_path / "components"))
+    a = _antenna(store, "narrow", NARROW)     # recommended 800-900
+    b = _antenna(store, "wide", WIDE)         # recommended 700-900
+    band = store.describe_chain([], [b], antenna_rx=a)["band"]
+    assert band["usable_bands"] == [{"start_hz": 800e6, "stop_hz": 900e6}]
+    assert sorted(band["measured_components"]) == ["narrow", "wide"]
+
+
+def test_unmeasured_parts_are_named_not_assumed_transparent(tmp_path):
+    from forge_vision.rfcomponents.store import ComponentStore
+    store = ComponentStore(str(tmp_path / "components"))
+    a = _antenna(store, "narrow", NARROW)
+    cable = store.create("cable", "unknown cable")["component_id"]
+    band = store.describe_chain([], [cable], antenna_rx=a)["band"]
+    assert band["unverified_components"] == ["unknown cable"]
+    assert "could narrow it further" in band["note"]
+
+
+def test_chain_with_nothing_measured_says_so(tmp_path):
+    from forge_vision.rfcomponents.store import ComponentStore
+    store = ComponentStore(str(tmp_path / "components"))
+    cable = store.create("cable", "unknown cable")["component_id"]
+    band = store.describe_chain([], [cable])["band"]
+    assert band["usable_bands"] == []
+    assert "usable band is unknown" in band["note"]

@@ -176,47 +176,157 @@ window.jobRetry = async (id) => {
   await api(`/api/jobs/${id}/retry`, { method: "POST" }); refreshJobs();
 };
 
-async function refreshChain() {
-  let comps;
-  try { comps = await api("/api/components"); } catch (e) { return; }
-  const opts = comps.map((c) =>
-    `<option value="${esc(c.component_id)}">${esc(c.kind)}: ${esc(c.name)}</option>`).join("");
-  for (const id of ["chain-tx", "chain-rx"]) {
-    const sel = $(id);
-    const chosen = [...sel.selectedOptions].map((o) => o.value);
-    sel.innerHTML = opts;
-    [...sel.options].forEach((o) => { o.selected = chosen.includes(o.value); });
+// The chain the operator is editing. Held locally so the path can be
+// reordered without a round trip per click, then pushed as one declaration.
+let chainState = { tx_ids: [], rx_ids: [], antenna_tx: "", antenna_rx: "" };
+let chainComps = [];
+
+const compById = (id) => chainComps.find((x) => x.component_id === id);
+
+function fmtLoss(c) {
+  if (c.nominal_loss_db === null || c.nominal_loss_db === undefined) return null;
+  return `${c.nominal_loss_db} dB`;
+}
+
+// One block in the signal-flow view. Amber border when the part has no
+// measured loss, because that is exactly what the totals are missing.
+function chainBlock(comp, kind) {
+  if (!comp) return "";
+  const loss = fmtLoss(comp);
+  const cls = kind === "antenna" ? "antenna" : (loss === null ? "unchar" : "");
+  const sub = kind === "antenna"
+    ? (comp.has_vna || comp.vna ? "characterised" : "no VNA data")
+    : (loss === null ? "loss unknown" : loss);
+  return `<div class="chainblk ${cls}">
+    <b>${esc(comp.name)}</b><span class="sub">${esc(comp.kind)} · ${esc(sub)}</span></div>`;
+}
+
+const ARROW = (t) => `<div class="chainarrow">${t}</div>`;
+
+function renderChainFlow(c) {
+  const radio = `<div class="chainblk radio"><b>Radio</b><span class="sub">RX / TX port</span></div>`;
+  const rxAnt = compById(c.antenna_rx);
+  const txAnt = compById(c.antenna_tx);
+  let html = "";
+
+  if (rxAnt || c.rx_path.length) {
+    html += `<div class="subhead" style="margin-top:0">Receive</div><div class="chainflow">`;
+    html += rxAnt ? chainBlock(rxAnt, "antenna")
+                  : '<div class="chainblk unchar"><b>no antenna</b><span class="sub">not declared</span></div>';
+    for (const comp of c.rx_path) { html += ARROW("→") + chainBlock(comp, comp.kind); }
+    html += ARROW("→") + radio + `</div>`;
   }
+  if (txAnt || c.tx_path.length) {
+    html += `<div class="subhead">Transmit</div><div class="chainflow">` + radio;
+    for (const comp of c.tx_path) { html += ARROW("→") + chainBlock(comp, comp.kind); }
+    html += ARROW("→") + (txAnt ? chainBlock(txAnt, "antenna")
+      : '<div class="chainblk unchar"><b>no antenna</b><span class="sub">not declared</span></div>');
+    html += `</div>`;
+  }
+  if (!html) {
+    html = '<div class="chainempty">Nothing declared yet — pick an antenna below and add cables.</div>';
+  }
+  $("chain-flow").innerHTML = html;
+}
+
+function renderChainFacts(c) {
+  const band = c.band || {};
+  const bands = (band.usable_bands || [])
+    .map((b) => `<span class="tag" style="background:#12241d;border:1px solid #1f4a38;color:#86dfc0">${
+      fmtHz(b.start_hz)}–${fmtHz(b.stop_hz)}</span>`).join(" ");
+  let html = `<p class="mut" style="margin:8px 0 4px">`
+    + `Total nominal loss <b>${c.total_loss_db} dB</b>`
+    + ` · delay <b>${c.total_delay_ns} ns</b></p>`;
+  html += `<p style="margin:4px 0"><span class="mut">Usable band:</span> `
+    + (bands || '<span class="mut">unknown</span>') + `</p>`;
+  for (const n of [c.note, band.note].filter(Boolean)) {
+    html += `<p style="color:var(--warn);margin:4px 0">${esc(n)}</p>`;
+  }
+  $("chain-facts").innerHTML = html;
+
+  const badge = c.config_name
+    ? `<span class="tag">${esc(c.config_name)}</span>` +
+      (c.config_modified ? '<span class="tag" style="background:#3a2f12;color:#e8c96a">modified</span>' : "")
+    : '<span class="tag" style="background:#2a2f3a;color:#9aa8bd">unsaved</span>';
+  $("chain-badge").innerHTML = badge;
+}
+
+// An RF path is a series of parts in a physical order, so it is edited as an
+// ordered list rather than a multi-select, which cannot express order at all.
+function renderPathEditor(which) {
+  const ids = chainState[`${which}_ids`];
+  const host = $(`path-${which}`);
+  host.innerHTML = ids.map((id, i) => {
+    const c = compById(id);
+    const nm = c ? `${esc(c.kind)}: ${esc(c.name)}` : `<span style="color:var(--warn)">missing (${esc(id)})</span>`;
+    const loss = c && fmtLoss(c);
+    return `<div class="pathrow">
+      <span class="ord">${i + 1}</span>
+      <span class="grow">${nm} <span class="mut">${loss || (c ? "loss unknown" : "")}</span></span>
+      <button onclick="movePath('${which}',${i},-1)"${i === 0 ? " disabled" : ""}>↑</button>
+      <button onclick="movePath('${which}',${i},1)"${i === ids.length - 1 ? " disabled" : ""}>↓</button>
+      <button onclick="dropPath('${which}',${i})">✕</button>
+    </div>`;
+  }).join("") || '<div class="mut" style="padding:4px 0">nothing in this path</div>';
+
+  const pick = $(`add-${which}-pick`);
+  pick.innerHTML = chainComps
+    .filter((c) => c.kind !== "antenna")
+    .map((c) => `<option value="${esc(c.component_id)}">${esc(c.kind)}: ${esc(c.name)}</option>`)
+    .join("") || '<option value="">add components first</option>';
+}
+
+async function pushChain() {
+  await api("/api/rf_chain", { method: "POST", body: chainState });
+  refreshChain();
+}
+
+window.movePath = (which, i, d) => {
+  const a = chainState[`${which}_ids`];
+  const j = i + d;
+  if (j < 0 || j >= a.length) return;
+  [a[i], a[j]] = [a[j], a[i]];
+  pushChain();
+};
+window.dropPath = (which, i) => {
+  chainState[`${which}_ids`].splice(i, 1);
+  pushChain();
+};
+
+async function refreshChain() {
+  try { chainComps = await api("/api/components"); } catch (e) { return; }
   const r = await api("/api/rf_chain");
   const c = r.resolved;
-  // Antennas are picked separately from the cable path: the active antenna is
-  // the single component whose response shapes every reading taken through it.
-  const antOpts = '<option value="">— none —</option>' + comps
+  chainState = {
+    tx_ids: [...r.declared.tx_ids], rx_ids: [...r.declared.rx_ids],
+    antenna_tx: r.declared.antenna_tx, antenna_rx: r.declared.antenna_rx,
+  };
+
+  // dashboard keeps a plain-language summary; the lab gets the visual
+  if ($("chain-summary")) {
+    const nm = (id) => { const x = compById(id); return x ? esc(x.name) : "—"; };
+    $("chain-summary").innerHTML =
+      (c.config_name ? `<b>${esc(c.config_name)}</b>${c.config_modified ? " (modified)" : ""}<br>` : "")
+      + `RX: ${nm(c.antenna_rx)} → ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>`
+      + `TX: ${c.tx_path.map((x) => esc(x.name)).join(" ← ") || "—"} ← ${nm(c.antenna_tx)}<br>`
+      + `total nominal loss ${c.total_loss_db} dB, delay ${c.total_delay_ns} ns`
+      + (c.note ? `<br><span style="color:var(--warn)">${esc(c.note)}</span>` : "");
+  }
+  if (!$("chain-flow")) return;      // dashboard-only refresh
+
+  const antOpts = '<option value="">— none —</option>' + chainComps
     .filter((x) => x.kind === "antenna")
     .map((x) => `<option value="${esc(x.component_id)}">${esc(x.name)}` +
                 `${x.has_vna ? " (characterised)" : ""}</option>`).join("");
-  for (const [id, current] of [["chain-antenna-tx", r.declared.antenna_tx],
-                               ["chain-antenna-rx", r.declared.antenna_rx]]) {
-    const sel = $(id);
-    sel.innerHTML = antOpts;
-    sel.value = current || "";
+  for (const [id, cur] of [["chain-antenna-tx", chainState.antenna_tx],
+                           ["chain-antenna-rx", chainState.antenna_rx]]) {
+    $(id).innerHTML = antOpts;
+    $(id).value = cur || "";
   }
-  const named = (id) => {
-    const c2 = comps.find((x) => x.component_id === id);
-    return c2 ? esc(c2.name) : "—";
-  };
-  const label = c.config_name
-    ? `<b>${esc(c.config_name)}</b>${c.config_modified ? " <span style=\"color:#e8c96a\">(modified)</span>" : ""}`
-    : "<span class=\"mut\">unsaved chain</span>";
-  const body =
-    `${label}<br>` +
-    `TX: ${named(c.antenna_tx)} ← ${c.tx_path.map((x) => esc(x.name)).join(" ← ") || "—"}<br>` +
-    `RX: ${named(c.antenna_rx)} → ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>` +
-    `total nominal loss ${c.total_loss_db} dB, delay ${c.total_delay_ns} ns` +
-    (c.note ? `<br><span style="color:#e8c96a">${esc(c.note)}</span>` : "");
-  for (const id of ["chain-summary", "chain-detail"]) {
-    if ($(id)) $(id).innerHTML = body;
-  }
+  renderChainFlow(c);
+  renderChainFacts(c);
+  renderPathEditor("tx");
+  renderPathEditor("rx");
   await refreshChainConfigs();
 }
 
@@ -275,16 +385,18 @@ window.deleteChain = async (id) => {
   refreshChain();
 };
 
-$("chain-save").onclick = async () => {
-  const pick = (id) => [...$(id).selectedOptions].map((o) => o.value);
-  // Send the antennas too. RfChainRequest defaults them to "", so omitting
-  // them here silently cleared whichever antenna was already declared.
-  await api("/api/rf_chain", { method: "POST", body: {
-    tx_ids: pick("chain-tx"), rx_ids: pick("chain-rx"),
-    antenna_tx: $("chain-antenna-tx").value,
-    antenna_rx: $("chain-antenna-rx").value } });
-  refreshChain();
-};
+for (const [sel, key] of [["chain-antenna-tx", "antenna_tx"],
+                          ["chain-antenna-rx", "antenna_rx"]]) {
+  $(sel).onchange = () => { chainState[key] = $(sel).value; pushChain(); };
+}
+for (const which of ["tx", "rx"]) {
+  $(`add-${which}`).onclick = () => {
+    const v = $(`add-${which}-pick`).value;
+    if (!v) return;
+    chainState[`${which}_ids`].push(v);
+    pushChain();
+  };
+}
 
 $("chain-config-save").onclick = async () => {
   const name = $("chain-config-name").value.trim();
@@ -1600,16 +1712,81 @@ $("comp-add").onclick = async () => {
 
 window.openComponent = async (id) => {
   selectedComp = id;
-  $("vna-upload").disabled = false;
-  $("comp-delete").disabled = false;
   const c = await api(`/api/components/${id}`);
-  const meta = { ...c };
-  if (meta.vna) meta.vna = { filename: meta.vna.filename, ports: meta.vna.ports,
-    points: meta.vna.freqs_hz.length, best_match: meta.vna.analysis.best_match };
-  $("comp-detail").textContent = JSON.stringify(meta, null, 1);
+  $("comp-edit").style.display = "";
+
+  const vna = c.vna;
+  const s21 = vna && vna.s21_analysis;
+  const row = (k, v, unknown) =>
+    `<dt>${esc(k)}</dt><dd class="${unknown ? "unknown" : ""}">${v}</dd>`;
+  const val = (x, fallback) => (x === null || x === undefined || x === ""
+    ? `<span class="mut">${fallback}</span>` : esc(String(x)));
+
+  let html = `<h3 style="margin:0 0 6px">${esc(c.name)}
+    <span class="tag">${esc(c.kind)}</span>
+    ${c.connector ? `<span class="tag">${esc(c.connector)}</span>` : ""}</h3><dl class="kv">`;
+  html += row("Claimed band", val(c.claimed_band, "not stated"));
+  if (c.kind === "antenna") html += row("Polarization", val(c.polarization, "not stated"));
+  html += row("Loss", c.nominal_loss_db === null || c.nominal_loss_db === undefined
+    ? '<span class="unknown">not characterised</span>' : `${c.nominal_loss_db} dB`,
+    c.nominal_loss_db === null || c.nominal_loss_db === undefined);
+  html += row("Delay", c.nominal_delay_ns === null || c.nominal_delay_ns === undefined
+    ? '<span class="unknown">not characterised</span>' : `${c.nominal_delay_ns} ns`,
+    c.nominal_delay_ns === null || c.nominal_delay_ns === undefined);
+  html += row("Added", new Date(c.created_at * 1000).toLocaleString());
+
+  if (vna) {
+    const b = vna.analysis.best_match;
+    html += row("VNA sweep", `${esc(vna.filename || "imported")} · ${vna.ports}-port · ` +
+      `${vna.freqs_hz.length} points, ${fmtHz(vna.freqs_hz[0])}–${fmtHz(vna.freqs_hz[vna.freqs_hz.length - 1])}`);
+    html += row("Best match", `VSWR ${b.vswr} at ${fmtHz(b.freq_hz)} (S11 ${b.s11_db} dB)`);
+    if (s21) {
+      html += row("Insertion loss",
+        `${s21.at_lowest.loss_db} dB at ${fmtHz(s21.at_lowest.freq_hz)} → ` +
+        `${s21.at_highest.loss_db} dB at ${fmtHz(s21.at_highest.freq_hz)}`);
+    }
+  } else {
+    html += row("VNA sweep", '<span class="mut">none imported</span>');
+  }
+  if (c.notes) html += row("Notes", esc(c.notes).replace(/\n/g, "<br>"));
+  html += `</dl>`;
+  $("comp-card").innerHTML = html;
+
+  $("comp-loss").value = c.nominal_loss_db ?? "";
+  $("comp-delay").value = c.nominal_delay_ns ?? "";
+  $("comp-notes").value = c.notes || "";
+  // Only offer to adopt a measurement that actually exists.
+  $("comp-adopt-loss").style.display = s21 ? "" : "none";
+
   renderBands(c);
-  drawVnaPlot(c, pinnedComp);
+  $("vna-panel").style.display = vna ? "" : "none";
+  if (vna) drawVnaPlot(c, pinnedComp);
   refreshComponents();
+};
+
+$("comp-save-char").onclick = async () => {
+  if (!selectedComp) return;
+  const num = (id) => ($(id).value === "" ? null : Number($(id).value));
+  await api(`/api/components/${selectedComp}/update`, { method: "POST", body: {
+    nominal_loss_db: num("comp-loss"), nominal_delay_ns: num("comp-delay") } });
+  openComponent(selectedComp);
+  refreshChain();
+};
+
+$("comp-save-notes").onclick = async () => {
+  if (!selectedComp) return;
+  await api(`/api/components/${selectedComp}/update`,
+            { method: "POST", body: { notes: $("comp-notes").value } });
+  openComponent(selectedComp);
+};
+
+$("comp-adopt-loss").onclick = async () => {
+  if (!selectedComp) return;
+  try {
+    await api(`/api/components/${selectedComp}/adopt_loss`, { method: "POST", body: {} });
+  } catch (e) { alert(e.message || e); return; }
+  openComponent(selectedComp);
+  refreshChain();
 };
 
 $("comp-pin").onchange = async () => {
@@ -1626,9 +1803,12 @@ $("comp-delete").onclick = async () => {
   if (!selectedComp || !confirm("Delete this component?")) return;
   await api(`/api/components/${selectedComp}/delete`, { method: "POST" });
   selectedComp = null;
-  $("comp-detail").textContent = "select a component";
+  $("comp-card").innerHTML = '<span class="mut">select a component</span>';
+  $("comp-edit").style.display = "none";
   $("comp-bands").innerHTML = "";
+  $("vna-panel").style.display = "none";
   refreshComponents();
+  refreshChain();       // the deleted part may have been in the active chain
 };
 
 $("vna-upload").onclick = async () => {

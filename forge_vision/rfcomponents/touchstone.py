@@ -101,6 +101,37 @@ def parse_touchstone(text: str, num_ports: int | None = None) -> dict:
     return out
 
 
+def analyze_s21(freqs_hz: list, s21: list) -> dict:
+    """Insertion loss from a two-port sweep (FR-RFC-004).
+
+    Reported positive-as-loss, which is how an operator talks about a cable.
+    Loss is frequency-dependent — roughly with the square root of frequency
+    for coax — so the per-point curve is kept and the summary always states
+    the frequency a single figure was taken at. A lone "1.4 dB" with no
+    frequency attached is not a measurement anyone can check.
+    """
+    loss_db = []
+    for g in s21:
+        mag = min(max(abs(g), 1e-9), 1.0)
+        loss_db.append(round(-20 * math.log10(mag), 3))
+    lo_i, hi_i = 0, len(freqs_hz) - 1
+    mid_i = len(freqs_hz) // 2
+    return {
+        "insertion_loss_db": loss_db,
+        "at_lowest": {"freq_hz": freqs_hz[lo_i], "loss_db": loss_db[lo_i]},
+        "at_midband": {"freq_hz": freqs_hz[mid_i], "loss_db": loss_db[mid_i]},
+        "at_highest": {"freq_hz": freqs_hz[hi_i], "loss_db": loss_db[hi_i]},
+        "min_loss_db": min(loss_db),
+        "max_loss_db": max(loss_db),
+    }
+
+
+def loss_at(freqs_hz: list, loss_db: list, freq_hz: float) -> dict:
+    """The measured loss nearest a frequency, with the frequency it came from."""
+    i = min(range(len(freqs_hz)), key=lambda j: abs(freqs_hz[j] - freq_hz))
+    return {"freq_hz": freqs_hz[i], "loss_db": loss_db[i]}
+
+
 def analyze_s11(freqs_hz: list, s11: list,
                 vswr_recommended: float = 2.0,
                 vswr_marginal: float = 3.0) -> dict:

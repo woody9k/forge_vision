@@ -668,6 +668,15 @@ def delete_component(comp_id: str):
         raise _fail(exc)
 
 
+@app.post("/api/components/{comp_id}/adopt_loss")
+def adopt_measured_loss(comp_id: str, body: S.AdoptLossRequest = S.AdoptLossRequest()):
+    """Set nominal loss from a two-port sweep already imported (FR-RFC-004)."""
+    try:
+        return runtime.components.adopt_measured_loss(comp_id, body.freq_hz)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 @app.post("/api/components/{comp_id}/vna")
 async def import_vna(comp_id: str, file: UploadFile):
     """Import a NanoVNA touchstone (.s1p/.s2p) measurement (FR-RFC-003)."""

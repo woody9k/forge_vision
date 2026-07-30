@@ -118,3 +118,39 @@ th { color: var(--mut); font-weight: 600; font-size: 11px; text-transform: upper
   font-size: 11px; margin-left: 4px; }
 .scene-target { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
 .scene-target input { width: 70px; }
+
+/* --- Antenna Lab: signal-flow chain -------------------------------------- */
+.chainflow {
+  display: flex; align-items: stretch; flex-wrap: wrap; gap: 0;
+  padding: 6px 0 2px;
+}
+.chainblk {
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 11px; min-width: 108px; line-height: 1.3;
+}
+.chainblk b { display: block; font-size: 13px; }
+.chainblk .sub { color: var(--mut); font-size: 11px; }
+.chainblk.antenna { border-color: #2f6f5c; }
+.chainblk.radio   { border-color: #33507a; background: #141d2b; }
+.chainblk.unchar  { border-color: var(--warn); }
+.chainblk.unchar .sub { color: var(--warn); }
+.chainarrow { display: flex; align-items: center; color: var(--mut); padding: 0 7px; }
+.chainempty { color: var(--mut); font-style: italic; padding: 8px 0; }
+
+/* --- readable key/value card --------------------------------------------- */
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0; }
+.kv dt { color: var(--mut); }
+.kv dd { margin: 0; }
+.kv dd.unknown { color: var(--warn); }
+
+/* --- ordered path editor -------------------------------------------------- */
+.pathrow {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel2); margin-bottom: 5px;
+}
+.pathrow .grow { flex: 1; }
+.pathrow .ord { color: var(--mut); font-size: 11px; min-width: 16px; }
+.pathrow button { padding: 2px 7px; font-size: 12px; }
+.subhead { color: var(--mut); font-size: 12px; text-transform: uppercase;
+           letter-spacing: .04em; margin: 12px 0 6px; }

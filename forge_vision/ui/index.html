@@ -316,70 +316,107 @@
 
   <!-- ============ ANTENNA LAB ============ -->
   <section id="tab-antenna" class="tab">
+
+    <!-- what is in use right now: the thing every reading depends on -->
+    <div class="panel">
+      <h2>Active configuration <span id="chain-badge"></span></h2>
+      <div id="chain-flow"></div>
+      <div id="chain-facts"></div>
+      <div class="toolbar" style="margin-top:10px">
+        <input id="chain-config-name" type="text" size="24"
+               placeholder="name this configuration…">
+        <button id="chain-config-save" class="primary">Save as configuration</button>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="panel">
+        <h2>Build the chain <span class="mut">— order is signal order</span></h2>
+        <div class="toolbar">
+          <label>TX antenna <select id="chain-antenna-tx"></select></label>
+          <label>RX antenna <select id="chain-antenna-rx"></select></label>
+        </div>
+        <div class="subhead">TX path <span class="mut">radio → antenna</span></div>
+        <div id="path-tx"></div>
+        <div class="toolbar">
+          <select id="add-tx-pick"></select>
+          <button id="add-tx">Add to TX path</button>
+        </div>
+        <div class="subhead">RX path <span class="mut">antenna → radio</span></div>
+        <div id="path-rx"></div>
+        <div class="toolbar">
+          <select id="add-rx-pick"></select>
+          <button id="add-rx">Add to RX path</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Saved configurations</h2>
+        <div id="chain-config-list"></div>
+        <h2 style="margin-top:14px">Measurements of this configuration</h2>
+        <div id="chain-measurements"></div>
+      </div>
+    </div>
+
     <div class="grid2">
       <div class="panel">
         <h2>Component inventory</h2>
         <div class="toolbar">
-          <select id="comp-kind">
+          <label>Kind <select id="comp-kind">
             <option value="antenna">antenna</option>
             <option value="cable">cable</option>
             <option value="adapter">adapter</option>
             <option value="attenuator">attenuator</option>
             <option value="filter">filter</option>
+            <option value="amplifier">amplifier</option>
+            <option value="splitter">splitter</option>
             <option value="termination">termination</option>
-          </select>
-          <input id="comp-name" type="text" size="18" placeholder="name…">
-          <input id="comp-connector" type="text" size="8" placeholder="SMA">
-          <input id="comp-band" type="text" size="14" placeholder="claimed band">
+          </select></label>
+          <label>Name <input id="comp-name" type="text" size="16"></label>
+          <label>Connector <input id="comp-connector" type="text" size="6"
+                                  placeholder="SMA"></label>
+          <label>Claimed band <input id="comp-band" type="text" size="12"
+                                     placeholder="e.g. 800–2500 MHz"></label>
           <button id="comp-add" class="primary">Add</button>
         </div>
         <div id="comp-list"></div>
       </div>
+
       <div class="panel">
         <h2>Component detail</h2>
-        <div class="toolbar">
-          <input id="vna-file" type="file" accept=".s1p,.s2p,.S1P,.S2P">
-          <button id="vna-upload" disabled>Import VNA measurement</button>
-          <label><input type="checkbox" id="comp-pin"> pin for comparison</label>
-          <button id="comp-delete" disabled>Delete</button>
+        <div id="comp-card"><span class="mut">select a component</span></div>
+        <div id="comp-edit" style="display:none">
+          <div class="subhead">Characterisation
+            <span class="mut">— what the chain totals use</span></div>
+          <div class="toolbar">
+            <label>Loss (dB) <input id="comp-loss" type="number" step="0.1"></label>
+            <label>Delay (ns) <input id="comp-delay" type="number" step="0.1"></label>
+            <button id="comp-save-char" class="primary">Save</button>
+            <button id="comp-adopt-loss" title="Take loss from the imported S21 sweep"
+                    style="display:none">Use measured S21</button>
+          </div>
+          <div class="subhead">Notes</div>
+          <div class="toolbar">
+            <input id="comp-notes" type="text" size="40" placeholder="notes…">
+            <button id="comp-save-notes">Save notes</button>
+          </div>
+          <div class="subhead">VNA measurement</div>
+          <div class="toolbar">
+            <input id="vna-file" type="file" accept=".s1p,.s2p,.S1P,.S2P">
+            <button id="vna-upload">Import</button>
+            <label><input type="checkbox" id="comp-pin"> pin for comparison</label>
+            <button id="comp-delete">Delete component</button>
+          </div>
+          <div id="comp-bands"></div>
         </div>
-        <div id="comp-bands"></div>
-        <pre id="comp-detail" class="mono">select a component</pre>
       </div>
     </div>
-    <div class="panel">
+
+    <div class="panel" id="vna-panel" style="display:none">
       <h2>S11 return loss <span class="mut">(solid)</span> &amp; VSWR
         <span class="mut">(dashed, right axis)</span>
         <span class="mut" id="antenna-meta"></span></h2>
       <canvas id="vna-plot" width="1280" height="320"></canvas>
-    </div>
-
-    <div class="grid2">
-      <div class="panel">
-        <h2>Chain configuration
-          <span class="mut">— what every reading passes through</span></h2>
-        <div class="toolbar">
-          <label>TX antenna <select id="chain-antenna-tx"></select></label>
-          <label>RX antenna <select id="chain-antenna-rx"></select></label>
-        </div>
-        <div class="toolbar">
-          <label>TX path <select id="chain-tx" multiple size="3"></select></label>
-          <label>RX path <select id="chain-rx" multiple size="3"></select></label>
-          <button id="chain-save">Apply</button>
-        </div>
-        <div id="chain-detail" class="mut"></div>
-        <div class="toolbar" style="margin-top:8px">
-          <input id="chain-config-name" type="text" size="22"
-                 placeholder="name this configuration…">
-          <button id="chain-config-save" class="primary">Save configuration</button>
-        </div>
-      </div>
-      <div class="panel">
-        <h2>Saved configurations <span class="mut">— activate to reuse</span></h2>
-        <div id="chain-config-list"></div>
-        <h2 style="margin-top:12px">Measurements of the active configuration</h2>
-        <div id="chain-measurements" class="mut"></div>
-      </div>
     </div>
   </section>
 

@@ -9,7 +9,8 @@ import os
 import time
 import uuid
 
-from .touchstone import analyze_s11, parse_touchstone
+from .touchstone import (analyze_s11, analyze_s21, loss_at,
+                         parse_touchstone)
 
 KINDS = ("antenna", "cable", "adapter", "attenuator", "filter", "amplifier",
          "splitter", "termination")
@@ -127,7 +128,73 @@ class ComponentStore:
             chain["note"] = (
                 "Totals exclude components with no measured loss or delay; "
                 "the real path loss and delay are higher than shown.")
+        chain["band"] = self._chain_band(
+            [antenna_tx, antenna_rx, *(tx_ids or []), *(rx_ids or [])])
         return chain
+
+    def _recommended_intervals(self, comp_id: str):
+        """(name, intervals) for a component, or (name, None) if unmeasured."""
+        try:
+            c = self.load(comp_id)
+        except (FileNotFoundError, ValueError):
+            return None, None
+        vna = c.get("vna")
+        if not vna:
+            return c.get("name", comp_id), None
+        return c["name"], [(b["start_hz"], b["stop_hz"])
+                           for b in vna["analysis"]["bands"]
+                           if b["rating"] == "recommended"]
+
+    def _chain_band(self, comp_ids: list) -> dict:
+        """Where the whole chain is usable (FR-RFC-004).
+
+        The usable band of a series path is the intersection of its parts:
+        an antenna good from 800-1000 MHz behind a filter good from
+        900-2000 MHz is a 900-1000 MHz chain. Components with no measurement
+        are named rather than assumed transparent — an unmeasured part could
+        be narrowing the band and nothing here would know.
+        """
+        measured, unverified = [], []
+        for cid in [c for c in comp_ids if c]:
+            name, intervals = self._recommended_intervals(cid)
+            if name is None:
+                continue
+            if intervals is None:
+                unverified.append(name)
+            else:
+                measured.append((name, intervals))
+
+        usable = None
+        for _, intervals in measured:
+            if usable is None:
+                usable = list(intervals)
+                continue
+            merged = []
+            for s1, e1 in usable:
+                for s2, e2 in intervals:
+                    s, e = max(s1, s2), min(e1, e2)
+                    if e > s:
+                        merged.append((s, e))
+            usable = sorted(merged)
+
+        out = {
+            "usable_bands": [{"start_hz": s, "stop_hz": e}
+                             for s, e in (usable or [])],
+            "measured_components": [n for n, _ in measured],
+            "unverified_components": sorted(set(unverified)),
+        }
+        if measured and not out["usable_bands"]:
+            out["note"] = ("The measured components have no frequency range in "
+                           "common; this chain has no recommended band.")
+        elif not measured:
+            out["note"] = ("No component in this chain has a VNA measurement, "
+                           "so its usable band is unknown.")
+        elif out["unverified_components"]:
+            out["note"] = (
+                "Range shown is the intersection of the measured components "
+                "only. " + ", ".join(out["unverified_components"])
+                + " could narrow it further.")
+        return out
 
     def import_vna(self, comp_id: str, text: str, filename: str = "") -> dict:
         """Attach a touchstone measurement and derived analysis (FR-RFC-003/004)."""
@@ -148,5 +215,38 @@ class ComponentStore:
             "analysis": {k: analysis[k] for k in
                          ("bands", "best_match", "thresholds")},
         }
+        if "s21" in data:
+            # A two-port sweep of a cable or attenuator measures the very
+            # thing the chain totals need. Without this it was stored and
+            # then ignored, leaving the component "uncharacterised" next to
+            # its own measurement.
+            comp["vna"]["s21_analysis"] = analyze_s21(data["freqs_hz"],
+                                                      data["s21"])
+        self._save(comp)
+        return comp
+
+    def adopt_measured_loss(self, comp_id: str,
+                            freq_hz: float | None = None) -> dict:
+        """Set nominal loss from an imported S21 sweep (FR-RFC-004).
+
+        Records the frequency the figure was taken at, because cable loss
+        rises with frequency and a bare number would be a claim the operator
+        could not check.
+        """
+        comp = self.load(comp_id)
+        vna = comp.get("vna") or {}
+        s21 = (vna.get("s21_analysis") or {}).get("insertion_loss_db")
+        if not s21:
+            raise ValueError(
+                f"{comp['name']} has no two-port (.s2p) measurement to take "
+                "insertion loss from")
+        if freq_hz is None:
+            freq_hz = vna["s21_analysis"]["at_midband"]["freq_hz"]
+        hit = loss_at(vna["freqs_hz"], s21, freq_hz)
+        comp["nominal_loss_db"] = hit["loss_db"]
+        note = (f"insertion loss {hit['loss_db']} dB measured at "
+                f"{hit['freq_hz'] / 1e6:.1f} MHz"
+                + (f" (from {vna['filename']})" if vna.get("filename") else ""))
+        comp["notes"] = (comp.get("notes", "") + "\n" + note).strip()
         self._save(comp)
         return comp
