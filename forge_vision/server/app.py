@@ -44,8 +44,20 @@ def status():
 # -- devices -----------------------------------------------------------------
 @app.post("/api/devices/rescan")
 def rescan(body: S.RescanRequest = S.RescanRequest()):
-    """Probe for hardware without restarting; optional explicit URI."""
-    return runtime.rescan_hardware(body.uri)
+    """Probe for hardware without restarting.
+
+    Surveys every candidate transport, groups those that are the same physical
+    radio, and registers the fastest — one entry per board. `prefer` overrides
+    the choice; `uri` skips the survey and opens exactly that transport.
+    """
+    return runtime.rescan_hardware(body.uri, prefer=body.prefer,
+                                   measure=body.measure)
+
+
+@app.get("/api/devices/transports")
+def device_transports(measure: bool = True):
+    """Every way into every reachable radio, measured, registering nothing."""
+    return runtime.survey_transports(measure=measure)
 
 
 @app.post("/api/devices/{device_id}/connect")

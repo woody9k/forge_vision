@@ -31,8 +31,13 @@ class Strict(BaseModel):
 
 # -- devices ----------------------------------------------------------------
 class RescanRequest(Strict):
-    uri: str = Field("", description="Explicit URI such as ip:192.168.1.87; "
-                                     "empty probes the default transports")
+    uri: str = Field("", description="Exact URI to open, e.g. ip:192.168.99.222. "
+                                     "Bypasses the survey entirely.")
+    prefer: str = Field("auto", pattern="^(auto|usb|network|usb-gadget|ip:.*|usb:.*)$",
+                        description="Which transport to choose when surveying: "
+                                    "auto (fastest measured), a kind, or a URI")
+    measure: bool = Field(True, description="Time each transport before choosing. "
+                                            "Set false for a faster, unmeasured scan.")
 
 
 class DeviceConfigRequest(Strict):

@@ -93,10 +93,13 @@ positioning.py  manual / survey-wheel / replay position sources
   | `usb:` | 28.3 MB/s | 7.1 MSPS | 5.9 fps |
   | `ip:192.168.2.1` (USB gadget) | 21.3 MB/s | 5.3 MSPS | — |
 
-  Prefer Ethernet for live work: it is twice the frame rate and needs no udev
-  rule. Only one handle may claim the **USB** interface (`connect()` is
-  idempotent); the network backends are not exclusive, so diagnostics can run
-  alongside a deployment.
+  Only one handle may claim the **USB** interface (`connect()` is idempotent);
+  the network backends are not exclusive, so diagnostics can run alongside a
+  deployment. Discovery measures each transport and picks the fastest rather
+  than assuming — see `devices/discovery.py`. Site-specific addresses go in
+  `FORGE_VISION_PLUTO_URIS`; `prefer` on `/api/devices/rescan` overrides the
+  choice, and an override that cannot be met is reported, not silently
+  swapped.
 - The Ethernet port has a **static address, 192.168.99.222** (`ipaddr_eth` in
   the `[USB_ETHERNET]` section of `config.txt` on the board's FAT16 partition).
   To change it: mount `/dev/sda1`, edit `config.txt` — it is **CRLF**, so a

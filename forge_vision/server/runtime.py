@@ -117,34 +117,103 @@ class Runtime:
         except Exception:  # noqa: BLE001 - hardware discovery is best-effort
             pass
 
-    def rescan_hardware(self, uri: str = "") -> dict:
-        """Probe for radios without restarting (default URIs, or one explicit
-        URI such as ip:192.168.1.87 for a Pluto+ on its Ethernet port)."""
-        from ..devices.pluto import DEFAULT_URIS, PlutoDevice, driver_status
+    def rescan_hardware(self, uri: str = "", prefer: str = "auto",
+                        measure: bool = True) -> dict:
+        """Probe for radios without restarting.
+
+        With no explicit URI this surveys every candidate transport, groups the
+        ones that are the same physical board, and registers the fastest way in
+        — one entry per radio. `prefer` overrides the choice ("usb",
+        "network", or an exact URI) for when the fastest link is not the one
+        you want, such as debugging the network the radio is on.
+        """
+        from ..devices.pluto import PlutoDevice, driver_status
         status = driver_status()
         result = {"driver": status, "added": [], "already_present": [],
-                  "errors": []}
+                  "errors": [], "survey": []}
         if not status["available"]:
             return result
-        uris = [uri] if uri else list(DEFAULT_URIS)
-        for u in uris:
-            device_id = f"pluto-{u}"
+
+        if uri:
+            # An explicit URI is an instruction, not a suggestion: open exactly
+            # that transport without surveying or second-guessing it.
+            device_id = f"pluto-{uri}"
             if device_id in self.devices:
                 result["already_present"].append(device_id)
-                if not uri:
-                    break      # the default transports are one radio
-                continue
+                return result
             try:
-                dev = PlutoDevice(u)
+                dev = PlutoDevice(uri)
                 dev.connect()
                 self._register(dev)
-                self.safety.audit("device_discovered", device=device_id, uri=u)
+                self.safety.audit("device_discovered", device=device_id, uri=uri)
                 result["added"].append(self._describe_device(dev))
-                if not uri:
-                    break      # stop at the first default transport that opens
             except Exception as exc:  # noqa: BLE001 - report, don't crash
-                result["errors"].append({"uri": u, "error": str(exc)})
+                result["errors"].append({"uri": uri, "error": str(exc)})
+            return result
+
+        try:
+            found = PlutoDevice.discover(prefer=prefer, measure=measure)
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append({"uri": "(survey)", "error": str(exc)})
+            return result
+        for dev in found:
+            info = getattr(dev, "discovery", {}) or {}
+            result["survey"].append(info)
+            device_id = dev.device_id
+            # Already registered under *any* transport of the same board: the
+            # whole point of the survey is one entry per radio.
+            known = {d.uri for d in self.devices.values() if hasattr(d, "uri")}
+            alt_uris = {t.get("uri") for t in info.get("alternatives", [])}
+            if device_id in self.devices or (known & alt_uris):
+                result["already_present"].append(device_id)
+                try:
+                    dev.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            self._register(dev)
+            self.safety.audit("device_discovered", device=device_id,
+                              uri=dev.uri, reason=info.get("reason", ""))
+            result["added"].append(self._describe_device(dev))
         return result
+
+    def survey_transports(self, measure: bool = True) -> dict:
+        """Report every way into every radio, without registering anything.
+
+        A transport this deployment already holds is reported as in use rather
+        than as unreachable. The USB backend is exclusive, so probing it while
+        we own it fails with "Device or resource busy" — calling that
+        "unreachable" would blame the hardware for our own handle.
+        """
+        from ..devices import discovery
+        from ..devices.pluto import driver_status
+        status = driver_status()
+        if not status["available"]:
+            return {"driver": status, "boards": [], "probes": []}
+
+        mine = {getattr(d, "uri", None): did
+                for did, d in self.devices.items() if getattr(d, "uri", None)}
+        probes = []
+        for uri in discovery.candidate_uris():
+            if uri in mine:
+                held = discovery.TransportProbe(
+                    uri=uri, reachable=True,
+                    error="", identity={})
+                held.in_use_by = mine[uri]
+                probes.append(held)
+                continue
+            probes.append(discovery.probe(uri, measure=measure))
+        out = {"driver": status,
+               "boards": discovery.group_boards(probes),
+               "probes": []}
+        for p in probes:
+            d = p.to_dict()
+            if getattr(p, "in_use_by", ""):
+                d["in_use_by"] = p.in_use_by
+                d["note"] = ("already open in this deployment; not re-probed "
+                             "because the USB backend is exclusive")
+            out["probes"].append(d)
+        return out
 
     def device(self, device_id: str):
         if device_id not in self.devices:

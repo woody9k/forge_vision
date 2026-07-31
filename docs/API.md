@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785446312.703704,
+    "time": 1785467542.5083153,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -95,7 +95,7 @@ Platform state: devices, safety, storage, waveforms.
    ]
   },
   {
-   "device_id": "pluto-usb:",
+   "device_id": "pluto-ip:pluto.boblab.net",
    "kind": "pluto",
    "connected": true,
    "tx_enabled": false,
@@ -103,8 +103,7 @@ Platform state: devices, safety, storage, waveforms.
     "center_frequency_hz": 915000000.0,
     "sample_rate_hz": 61440000.0,
     "rx_bandwidth_hz": 56000000.0,
-    "rx_gain_db": 40.0,
-    "tx_
+    "rx_gain_db"
 ```
 
 ### `GET /api/experiments`
@@ -113,6 +112,23 @@ Experiment index. Filter with ?query=, ?tag=, ?kind=.
 
 ```json
 [
+ {
+  "experiment_id": "20260730-182539-06cf7e",
+  "name": "band survey",
+  "objective": "receive-only occupancy survey 902.0-928.0 MHz",
+  "owner": "",
+  "tags": [],
+  "kind": "survey",
+  "started_at": 1785450339.5909677,
+  "ended_at": 1785450348.3669384,
+  "status": "finalized",
+  "num_segments": 0,
+  "derived": [
+   "band_survey"
+  ],
+  "device": "pluto-usb:",
+  "parent": null
+ },
  {
   "experiment_id": "20260730-133232-c9712a",
   "name": "after repatch",
@@ -147,24 +163,7 @@ Experiment index. Filter with ?query=, ?tag=, ?kind=.
   "device": "pluto-usb:",
   "parent": null
  },
- {
-  "experiment_id": "20260730-122804-4fd302",
-  "name": "log-periodic + 10ft cable, RX-only discovery sweep",
-  "objective": "receive-only occupancy survey 100.0-3000.0 MHz",
-  "owner": "",
-  "tags": [],
-  "kind": "survey",
-  "started_at": 1785428884.7738934,
-  "ended_at": 1785428990.029126,
-  "status": "finalized",
-  "num_segments": 0,
-  "derived": [
-   "band_survey"
-  ],
-  "device": "pluto-usb:",
-  "parent": null
- },
- "... 23 total"
+ "... 24 total"
 ]
 ```
 
@@ -263,43 +262,31 @@ Declared cable/adapter chain, recorded with every experiment.
 {
  "declared": {
   "tx_ids": [],
-  "rx_ids": [
-   "2205b245a2"
-  ],
-  "antenna_tx": "",
+  "rx_ids": [],
+  "antenna_tx": "abecc2b819",
   "antenna_rx": "1baed4307e"
  },
  "resolved": {
   "tx_path": [],
-  "rx_path": [
-   {
-    "component_id": "2205b245a2",
-    "kind": "cable",
-    "name": "long skinny cable",
-    "connector": "",
-    "nominal_loss_db": null,
-    "nominal_delay_ns": null
-   }
-  ],
-  "antenna_tx": "",
+  "rx_path": [],
+  "antenna_tx": "abecc2b819",
   "antenna_rx": "1baed4307e",
   "total_loss_db": 0.0,
   "total_delay_ns": 0.0,
-  "components_without_characterisation": [
-   "long skinny cable"
-  ],
-  "note": "Totals exclude components with no measured loss or delay; the real path loss and delay are higher than shown.",
+  "components_without_characterisation": [],
   "band": {
    "usable_bands": [],
    "measured_components": [],
    "unverified_components": [
     "blue triangle long periodic",
-    "long skinny cable"
+    "telescoping whip (RX1)"
    ],
    "note": "No component in this chain has a VNA measurement, so its usable band is unknown."
   },
   "config_id": "83ac246b0b",
-  "config_name": "bench: LPDA + 10ft on RX"
+  "config_name": "bench: LPDA + 10ft on RX",
+  "config_modified": true,
+  "note": "Patched chain differs from saved configuration 'bench: LPDA + 10ft on RX'; it is not that configuration."
  }
 }
 ```
@@ -590,6 +577,7 @@ untyped object, so they are documented here.
 | POST | `/api/components/{comp_id}/update` | Update Component |
 | POST | `/api/components/{comp_id}/vna` | Import Vna |
 | POST | `/api/devices/rescan` | Rescan |
+| GET | `/api/devices/transports` | Device Transports |
 | POST | `/api/devices/{device_id}/configure` | Configure |
 | POST | `/api/devices/{device_id}/connect` | Connect |
 | POST | `/api/devices/{device_id}/disconnect` | Disconnect |
