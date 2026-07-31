@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 import os
 import tempfile
 
@@ -23,7 +24,25 @@ from .runtime import Runtime
 log = logging.getLogger("forge_vision.server")
 
 runtime = Runtime()
-app = FastAPI(title="Forge Vision", version="0.3.0")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Bring the instrument to a safe stop when the service stops.
+
+    Without this, stopping the server was the process vanishing while a radio
+    could still be keyed and a survey still sweeping. This does not survive a
+    host failure — only a hardware TX watchdog does — but it covers the
+    ordinary stop and restart (FR-SAF-003).
+    """
+    yield
+    try:
+        runtime.shutdown("application shutdown")
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        log.exception("error during runtime shutdown")
+
+
+app = FastAPI(title="Forge Vision", version="0.3.0", lifespan=lifespan)
 
 
 def _fail(exc: Exception) -> HTTPException:
@@ -144,10 +163,15 @@ def set_tx(device_id: str, body: S.TxRequest):
 @app.post("/api/safety/arm")
 def arm(body: S.ArmRequest):
     try:
-        runtime.safety.arm(body.operator, body.acknowledgement)
-        return runtime.safety.status()
+        return runtime.arm(body.operator, body.acknowledgement)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
+
+
+@app.post("/api/safety/resume")
+def resume_acquisition():
+    """Lift the latch left by an emergency stop."""
+    return runtime.resume_acquisition()
 
 
 @app.post("/api/safety/disarm")
@@ -197,12 +221,10 @@ def audit(n: int = 200):
 
 @app.post("/api/safety/profile")
 def set_profile(body: S.ProfileRequest):
-    name = body.profile
-    if name not in runtime.safety.limits.frequency_profiles:
-        raise HTTPException(404, f"unknown frequency profile: {name}")
-    runtime.safety.limits.active_profile = name
-    runtime.safety.audit("frequency_profile_changed", profile=name)
-    return runtime.safety.status()
+    try:
+        return runtime.set_frequency_profile(body.profile)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
 
 
 # -- jobs (FR-API-003) --------------------------------------------------------
@@ -321,7 +343,7 @@ def rx_protection(device_id: str = "sim-pluto-0"):
 @app.post("/api/safety/path_attenuation")
 def path_attenuation(body: S.PathAttenuationRequest):
     try:
-        return runtime.safety.declare_path_attenuation(body.attenuation_db)
+        return runtime.declare_path_attenuation(body.attenuation_db)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -801,6 +823,10 @@ async def live(ws: WebSocket, device_id: str = Query("sim-pluto-0"),
     watcher = asyncio.create_task(watch_for_disconnect())
     try:
         while not watcher.done():
+            if runtime.stop_acquisition.is_set():
+                await ws.send_json({"error": "acquisition stopped",
+                                    "device_id": device_id, "fatal": True})
+                break
             dev = runtime.devices.get(device_id)
             if dev is None or not dev.connected:
                 await ws.send_json({"error": "device not connected",

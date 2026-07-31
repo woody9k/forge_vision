@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785472119.8051186,
+    "time": 1785501690.3025093,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -617,6 +617,7 @@ untyped object, so they are documented here.
 | POST | `/api/safety/disarm` | Disarm ⚠️ safety state |
 | POST | `/api/safety/path_attenuation` | Path Attenuation ⚠️ safety state |
 | POST | `/api/safety/profile` | Set Profile ⚠️ safety state |
+| POST | `/api/safety/resume` | Resume Acquisition |
 | GET | `/api/safety/rx_protection` | Rx Protection |
 | POST | `/api/safety/stop` | Emergency Stop |
 | POST | `/api/sage/ask` | Sage Ask |

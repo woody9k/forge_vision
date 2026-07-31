@@ -42,10 +42,19 @@ enforced by tests. Breaking one is a defect even if everything still passes.
 4. **Raw data is immutable.** Finalized experiments refuse new segments;
    derived products are separate artifacts carrying stage versions and
    parameters.
-5. **Transmit is gated.** Every TX path runs through `SafetyController`, is
-   bracketed by `try/finally`, and is enforced for physical radios only —
-   a simulated receiver cannot be damaged, so the interlock records rather than
-   refuses there. Do not add a TX path that bypasses this.
+5. **Transmit is gated, and the gate belongs to a configuration.** Every TX
+   path runs through `SafetyController`, is bracketed by `try/finally`, and
+   RX-protection is enforced for physical radios only — a simulated receiver
+   cannot be damaged, so the interlock records rather than refuses there.
+   Permission is granted against a *fingerprint* of the approved setup
+   (frequency, occupied span, waveform, gains, rate, profile, declared path),
+   so changing any of those withdraws it and forces TX off. The whole occupied
+   band is checked, not the centre frequency: a 56 MHz sweep centred in a
+   26 MHz allocation is legal at its midpoint and illegal either side of it.
+   This paragraph used to claim every TX path was gated while `configure()`
+   bypassed the interlock entirely — TX gain could go from −30 dB to 0 dB, or
+   the radio be walked outside the active profile, mid-transmission. Do not
+   add a TX path that bypasses this, and do not weaken the fingerprint.
 6. **SAGE may not assert without evidence.** `Fact` raises
    `UngroundedStatement` at construction if a non-`unknown` statement has no
    evidence links. LLM narration is checked for invented numbers and withheld

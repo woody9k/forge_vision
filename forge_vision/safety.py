@@ -7,6 +7,7 @@ device adapter cannot leave transmit armed (§4.1).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -141,6 +142,9 @@ class SafetyController:
                           for item in DEFAULT_CHECKLIST]
         # what the operator says is in the TX->RX path (FR-SAF-006)
         self.path_attenuation_db = 0.0
+        # device_id -> fingerprint of the configuration TX was approved for.
+        # Transmit permission belongs to a configuration, not to a device.
+        self._tx_authorizations: dict[str, str] = {}
 
     def declare_path_attenuation(self, db: float) -> dict:
         """Record the attenuation/isolation the operator has in the path."""
@@ -219,6 +223,43 @@ class SafetyController:
         self.audit("tx_disarmed", reason=reason)
 
     # -- validation --------------------------------------------------------
+    def tx_fingerprint(self, center_frequency_hz: float, waveform,
+                       tx_gain_db: float, rx_gain_db: float | None = None,
+                       **extra) -> str:
+        """A stable digest of everything that was approved for transmit.
+
+        Authorization is granted against a *configuration*, not a device. If
+        any of these change, the approval no longer describes what the radio is
+        doing and must be withdrawn (FR-SAF-004).
+        """
+        occupied = waveform.occupied_range(center_frequency_hz)
+        payload = {
+            "center_frequency_hz": round(float(center_frequency_hz), 3),
+            "occupied": [round(x, 3) for x in occupied] if occupied else None,
+            "waveform": f"{waveform.name}@{waveform.version}",
+            "waveform_bandwidth_hz": float(waveform.bandwidth_hz),
+            "sample_rate": float(waveform.sample_rate),
+            "amplitude": float(waveform.amplitude),
+            "duty_cycle": float(waveform.duty_cycle),
+            "tx_gain_db": round(float(tx_gain_db), 3),
+            "rx_gain_db": (round(float(rx_gain_db), 3)
+                           if rx_gain_db is not None else None),
+            "profile": self.limits.active_profile,
+            "path_attenuation_db": float(self.path_attenuation_db),
+            **extra,
+        }
+        blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode()).hexdigest()[:32]
+
+    def authorization_for(self, device_id: str) -> str:
+        """The fingerprint TX was last authorized against, or ""."""
+        with self._lock:
+            return self._tx_authorizations.get(device_id, "")
+
+    def revoke_authorization(self, device_id: str) -> None:
+        with self._lock:
+            self._tx_authorizations.pop(device_id, None)
+
     def validate_tx(self, center_frequency_hz: float, waveform, tx_gain_db: float,
                     rx_gain_db: float | None = None,
                     enforce_rx_protection: bool = True) -> None:
@@ -239,15 +280,24 @@ class SafetyController:
         if tx_gain_db > lims.max_tx_gain_db:
             raise SafetyViolation(
                 f"tx gain {tx_gain_db} dB exceeds limit {lims.max_tx_gain_db} dB")
-        if not (lims.min_frequency_hz <= center_frequency_hz <= lims.max_frequency_hz):
+        # The whole occupied span must be legal, not just its midpoint. A
+        # 56 MHz sweep centred in a 26 MHz allocation passes a centre-only
+        # check and transmits outside the allocation for most of every chirp.
+        occupied = waveform.occupied_range(center_frequency_hz)
+        lo_hz, hi_hz = occupied if occupied else (center_frequency_hz,
+                                                  center_frequency_hz)
+        span = "" if lo_hz == hi_hz else (
+            f" (occupies {lo_hz:.4g}-{hi_hz:.4g} Hz)")
+        if not (lims.min_frequency_hz <= lo_hz
+                and hi_hz <= lims.max_frequency_hz):
             raise SafetyViolation(
                 f"frequency {center_frequency_hz:.4g} Hz outside device policy "
-                f"[{lims.min_frequency_hz:.4g}, {lims.max_frequency_hz:.4g}]")
+                f"[{lims.min_frequency_hz:.4g}, {lims.max_frequency_hz:.4g}]{span}")
         bands = self.limits.allowed_bands()
-        if bands and not any(lo <= center_frequency_hz <= hi for lo, hi in bands):
+        if bands and not any(lo <= lo_hz and hi_hz <= hi for lo, hi in bands):
             raise SafetyViolation(
                 f"frequency {center_frequency_hz:.4g} Hz not inside active profile "
-                f"'{self.limits.active_profile}'")
+                f"'{self.limits.active_profile}'{span}")
         if rx_gain_db is not None:
             check = self.rx_protection(tx_gain_db, rx_gain_db)
             if check["severity"] == "critical":
@@ -266,6 +316,11 @@ class SafetyController:
                            warnings=check["warnings"])
 
     # -- tx state tracking -------------------------------------------------
+    def authorize_tx(self, device_id: str, fingerprint: str) -> None:
+        """Record what this device's transmit permission was granted against."""
+        with self._lock:
+            self._tx_authorizations[device_id] = fingerprint
+
     def notify_tx_started(self, device_id: str, **detail) -> None:
         with self._lock:
             self.state.tx_active_devices.add(device_id)
@@ -274,6 +329,7 @@ class SafetyController:
     def notify_tx_stopped(self, device_id: str, reason: str = "normal") -> None:
         with self._lock:
             self.state.tx_active_devices.discard(device_id)
+            self._tx_authorizations.pop(device_id, None)
         self.audit("tx_stopped", device=device_id, reason=reason)
 
     # -- emergency / fault safe (FR-SAF-003, FR-SAF-008) --------------------

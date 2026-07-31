@@ -97,6 +97,9 @@ class Runtime:
         self.calibration: dict[str, dict] = {}       # device_id -> assets
         self.scans: dict[str, dict] = {}             # scan experiment_id -> session
         self.jobs = JobManager()                     # FR-API-003
+        self._tx_waveforms: dict[str, object] = {}   # device -> live waveform
+        # set by emergency stop and shutdown; long loops check it
+        self.stop_acquisition = threading.Event()
         self.position_source = ManualSource()        # FR-POS-001 default
         self._register(SimulatedPluto("sim-pluto-0"))
         self._discover_hardware()
@@ -313,12 +316,107 @@ class Runtime:
         dev = self.device(device_id)
         merged = {**dev.config.to_dict(), **cfg}
         dev.configure(DeviceConfig(**merged))
+        # A live transmitter must not inherit permission granted for a
+        # different configuration. Previously this path bypassed the interlock
+        # entirely: tx gain could go from -30 dB to 0 dB, or the radio could be
+        # walked outside the active frequency profile, without revalidation.
+        self.enforce_tx_authorization(f"device {device_id} reconfigured")
         return self._describe_device(dev)
 
     # -- safety ------------------------------------------------------------
     def emergency_stop(self) -> dict:
+        """Stop transmitting and stop acquiring (FR-SAF-003).
+
+        Disabling TX is the urgent part, so it happens first and unconditionally.
+        But a stop that leaves survey jobs sweeping and live streams pulling
+        buffers has not stopped the instrument — it has only made it quieter,
+        and the next thing an operator does may re-key a radio that is still
+        mid-acquisition.
+        """
         results = self.safety.emergency_stop(self.devices.values())
-        return {"stopped": True, "results": results}
+        self._tx_waveforms.clear()
+        for device_id in list(self.devices):
+            self.safety.revoke_authorization(device_id)
+        self.stop_acquisition.set()
+        cancelled = self._cancel_active_jobs("emergency stop")
+        interrupted = self._mark_scans_interrupted("emergency stop")
+        self.safety.audit("emergency_stop", jobs_cancelled=cancelled,
+                          scans_interrupted=interrupted)
+        return {"stopped": True, "results": results,
+                "jobs_cancelled": cancelled, "scans_interrupted": interrupted}
+
+    def resume_acquisition(self) -> dict:
+        """Clear the emergency-stop latch.
+
+        An emergency stop latches: acquisition stays refused until an operator
+        deliberately says the instrument is fit to use again. Auto-clearing on
+        the next request would make the stop a momentary interruption rather
+        than a state someone has to look at and dismiss.
+        """
+        was_set = self.stop_acquisition.is_set()
+        self.stop_acquisition.clear()
+        if was_set:
+            self.safety.audit("acquisition_resumed")
+        return {"acquisition_stopped": False, "was_stopped": was_set}
+
+    def _cancel_active_jobs(self, reason: str) -> list[str]:
+        cancelled = []
+        for j in self.jobs.list(active_only=True):
+            try:
+                self.jobs.cancel(j["job_id"])
+                cancelled.append(j["job_id"])
+            except Exception:  # noqa: BLE001 - stopping must not be blockable
+                pass
+        return cancelled
+
+    def _mark_scans_interrupted(self, reason: str) -> list[str]:
+        """Record unfinished scans as interrupted rather than leaving them open.
+
+        A scan abandoned mid-line is partial data, not absent data. Saying so
+        keeps it distinguishable from a scan that simply has not started
+        (FR-ACQ-003).
+        """
+        marked = []
+        for exp_id, session in list(self.scans.items()):
+            if session.get("finalized"):
+                continue
+            try:
+                self.store.annotate(exp_id, {
+                    "type": "interrupted", "reason": reason,
+                    "at": time.time(),
+                    "text": f"acquisition interrupted: {reason}"})
+                session["interrupted"] = reason
+                marked.append(exp_id)
+            except Exception:  # noqa: BLE001
+                pass
+        return marked
+
+    def shutdown(self, reason: str = "application shutdown") -> dict:
+        """Bring the instrument to a safe, recorded stop.
+
+        Called from the application lifespan handler so that stopping the
+        service is not merely the process disappearing while a radio is keyed.
+        Software cannot guarantee this after a host failure — a hardware TX
+        watchdog is the real answer for field work — but it covers the ordinary
+        case of the service being stopped or restarted.
+        """
+        out = self.emergency_stop()
+        self.safety.disarm()
+        for device_id, dev in list(self.devices.items()):
+            try:
+                dev.disconnect()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+        self.safety.audit("runtime_shutdown", reason=reason)
+        out["shutdown"] = reason
+        return out
+
+    def arm(self, operator: str, acknowledgement: str) -> dict:
+        """Arm the interlock. Arming is a deliberate act, so it also lifts an
+        emergency-stop latch rather than leaving the operator to find it."""
+        self.safety.arm(operator, acknowledgement)
+        self.stop_acquisition.clear()
+        return self.safety.status()
 
     def _enable_tx(self, dev, waveform, tx_gain_db: float) -> None:
         # only a physical receiver can be damaged, so the RX-protection
@@ -329,13 +427,72 @@ class Runtime:
             enforce_rx_protection=not dev.kind.startswith("simulated"))
         dev.load_waveform(waveform)
         dev.enable_tx()
+        # Remember the exact configuration this permission was granted against,
+        # and which waveform is loaded, so a later change can be detected.
+        self._tx_waveforms[dev.device_id] = waveform
+        self.safety.authorize_tx(dev.device_id, self._tx_fingerprint(dev, waveform,
+                                                                    tx_gain_db))
         self.safety.notify_tx_started(
             dev.device_id, waveform=waveform.name,
             frequency_hz=dev.config.center_frequency_hz, tx_gain_db=tx_gain_db)
 
     def _disable_tx(self, dev, reason: str = "normal") -> None:
         dev.force_tx_off()
+        self._tx_waveforms.pop(dev.device_id, None)
         self.safety.notify_tx_stopped(dev.device_id, reason=reason)
+
+    def _tx_fingerprint(self, dev, waveform, tx_gain_db: float) -> str:
+        return self.safety.tx_fingerprint(
+            dev.config.center_frequency_hz, waveform, tx_gain_db,
+            rx_gain_db=dev.config.rx_gain_db,
+            rf_bandwidth_hz=float(dev.config.rx_bandwidth_hz),
+            device_sample_rate_hz=float(dev.config.sample_rate_hz))
+
+    def set_frequency_profile(self, name: str) -> dict:
+        """Change the active profile, withdrawing any TX it no longer covers."""
+        if name not in self.safety.limits.frequency_profiles:
+            raise KeyError(f"unknown frequency profile: {name}")
+        self.safety.limits.active_profile = name
+        self.safety.audit("frequency_profile_changed", profile=name)
+        revoked = self.enforce_tx_authorization(f"frequency profile -> {name}")
+        status = self.safety.status()
+        if revoked:
+            status["tx_revoked"] = revoked
+        return status
+
+    def declare_path_attenuation(self, db: float) -> dict:
+        """Record TX->RX isolation, withdrawing TX approved under the old value."""
+        out = self.safety.declare_path_attenuation(db)
+        revoked = self.enforce_tx_authorization(f"path attenuation -> {db} dB")
+        if revoked:
+            out["tx_revoked"] = revoked
+        return out
+
+    def enforce_tx_authorization(self, reason: str) -> list[str]:
+        """Force TX off wherever the approved configuration no longer holds.
+
+        Transmit is authorized against a configuration, not a device. Changing
+        the centre frequency, gain, bandwidth, sample rate, safety profile or
+        declared path after TX is live means the approval no longer describes
+        what the radio is doing — so the approval is withdrawn rather than
+        quietly inherited (FR-SAF-004).
+        """
+        revoked = []
+        for device_id, dev in list(self.devices.items()):
+            if not getattr(dev, "tx_enabled", False):
+                continue
+            waveform = self._tx_waveforms.get(device_id)
+            approved = self.safety.authorization_for(device_id)
+            current = (self._tx_fingerprint(dev, waveform, dev.config.tx_gain_db)
+                       if waveform is not None else "")
+            if approved and current == approved:
+                continue
+            self.safety.audit("tx_authorization_revoked", device=device_id,
+                              reason=reason, approved=approved, now=current)
+            self._disable_tx(dev, reason=f"authorization revoked: {reason}")
+            self.safety.revoke_authorization(device_id)
+            revoked.append(device_id)
+        return revoked
 
     def set_tx(self, device_id: str, enable: bool, waveform_name: str = "") -> dict:
         dev = self.device(device_id)
@@ -1073,6 +1230,9 @@ class Runtime:
         dev = self.device(device_id)
         if not dev.connected:
             raise ValueError(f"{device_id} is not connected")
+        if self.stop_acquisition.is_set():
+            raise ValueError("acquisition is stopped after an emergency stop; "
+                             "resume before starting a new sweep")
         caps = dev.capabilities
         start_hz = max(float(start_hz), caps.min_frequency)
         stop_hz = min(float(stop_hz), caps.max_frequency)
@@ -1396,6 +1556,7 @@ class Runtime:
             "version": __import__("forge_vision").__version__,
             "devices": [self._describe_device(d) for d in self.devices.values()],
             "safety": self.safety.status(),
+            "acquisition_stopped": self.stop_acquisition.is_set(),
             "storage": self.store.storage_stats(),
             "recent_experiments": self.store.list()[:8],
             "active_scans": {k: v["builder"].status() for k, v in self.scans.items()},
