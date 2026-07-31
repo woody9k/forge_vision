@@ -227,9 +227,11 @@ The Pluto adapter runs **burst-capture only**: each acquisition is a single
 contiguous DMA buffer (max ~8.4 M samples), because no Pluto can stream
 61.44 MSPS continuously over USB or Ethernet. Short reads are reported as
 loss events, never concealed. Tuning limits are read from the device when
-the driver exposes them — a stock Pluto reports 325 MHz–3.8 GHz, a Pluto+
-or AD9364-hacked unit reports 70 MHz–6 GHz — with conservative stock limits
-assumed otherwise.
+the driver exposes them — a stock Pluto reports 325 MHz–3.8 GHz, an unlocked
+Pluto+ reports 70 MHz–6 GHz — with conservative stock limits assumed
+otherwise. The advertised bound is not trusted on its own: the bench board
+currently claims a 46.875 MHz floor it then refuses to tune to, so capability
+detection probes the edge rather than believing the driver.
 
 Bench safety notes: start with the `bench_cabled` frequency profile, keep TX
 gain at the -30 dB default, and run the attenuated loopback experiment
@@ -269,8 +271,11 @@ things about the results are worth knowing before quoting them:
   path is TX→target plus target→RX. This matters as soon as two antennas are
   physically separated.
 - **Coherent phase reference.** A second receive channel used as a hardware
-  reference is the route to usable synthetic bandwidth, and the current board
-  runs as a 1R1T AD9364.
+  reference is the route to usable synthetic bandwidth. Since 2026-07-31 the
+  bench board *does* run 2R2T, but the second channel is an out-of-spec unlock
+  of an AD9363 die whose RF performance has not been measured, and the Pluto
+  adapter still reports a single RX/TX channel regardless. Characterize it
+  (`tools/chancal/`) before building on it.
 - **Raw retention for stepped sweeps.** Only the stitched profile is stored, so
   a stepped run cannot yet be independently reprocessed.
 - **Persistent calibration.** Calibration state is in memory and does not

@@ -12,7 +12,7 @@ to that document — keep citing them, it is how coverage is tracked.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
-.venv/bin/python -m pytest tests/          # ~265 tests, ~3 min
+.venv/bin/python -m pytest tests/          # 309 tests, ~3 min
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
@@ -91,20 +91,42 @@ frequency, gain — stay on the working pages beside the plots they affect.
 ## Hardware notes that cost time to learn
 
 - The bench radio is a **Pluto+**. Since the 2026-07-30 reflash it reports as
-  **PlutoSDR Rev.C (Z7010-AD9364)**, `fw_version v0.33-3-gd382-dirty`, kernel
-  5.4.0, on-device libiio 0.21. It previously reported Rev.B with kernel 6.1
-  and libiio 0.26 — if you see Rev.B, the older firmware is back.
-- It runs as **AD9364** (`ad9361-phy,model: ad9364`), 1R1T: `cf-ad9361-lpc`
-  has two channels, which is I/Q of a single receiver, not two receivers.
-  Earlier firmware needed `fw_setenv compatible ad9364`; setting
-  `compatible=ad9361` on a non-Rev.C model string was silently downgraded to
-  `ad9363a` by the boot script, which cost an evening. The model string is now
-  Rev.C, so that particular trap no longer applies.
-- Tuning is **70 MHz – 6 GHz**. The current firmware advertises
-  `[70000000 1 6000000000]` honestly; the older one advertised a 46.875 MHz
-  floor and then rejected anything below 70 MHz. Capability detection still
-  probes the edge rather than trusting the advertised value — cheap, and it
-  is what caught the old lie.
+  **PlutoSDR Rev.C**, `fw_version v0.33-3-gd382-dirty`, kernel 5.4.0, on-device
+  libiio 0.21. It previously reported Rev.B with kernel 6.1 and libiio 0.26 —
+  if you see Rev.B, the older firmware is back.
+- **It runs as AD9361, 2R2T, since 2026-07-31** (`Z7010-AD9361`,
+  `ad9361-phy,model: ad9361`). `cf-ad9361-lpc` has **four** channels — two I/Q
+  pairs, two real receivers — and `cf-ad9361-dds-core-lpc` carries `TX1_*` and
+  `TX2_*` tone generators. It was 1R1T before, when those four were two.
+  The board routes all four to SMAs.
+  The missing channel was never the firmware or the hardware: it was the u-boot
+  environment. `compatible=ad9364` + `mode=1r1t` (plus `attr_name=compatible` /
+  `attr_val=ad9364`) made `adi_loadvals` `fdt rm` the
+  `adi,2rx-2tx-mode-enable` property and downgrade the TX core on every boot.
+  AD9364 is a 1R1T part, so asking for it is what cost the second channel.
+  Fixed over SSH without reflashing:
+
+  ```
+  fw_setenv attr_name; fw_setenv attr_val      # deleting BOTH is required
+  fw_setenv compatible ad9361
+  fw_setenv mode 2r2t
+  reboot
+  ```
+
+  Clearing `attr_name`/`attr_val` is not optional: `adi_loadvals` contains
+  `test -n ${attr_val} = ad9364`, a malformed 4-argument u-boot `test` that can
+  re-trigger the downgrade *and* `saveenv` `mode=1r1t` back to flash even with
+  `compatible=ad9361`. Revert with `compatible ad9364` / `mode 1r1t`. The old
+  trap where `ad9361` was silently downgraded to `ad9363a` applied to non-Rev.C
+  model strings, so it does not bite here.
+  **Channel 2 is an out-of-spec unlock of an AD9363 die and is unproven** — see
+  "Where things stand".
+- Tuning is **70 MHz – 6 GHz**, RX bandwidth 56 MHz, TX 40 MHz. Under
+  `compatible=ad9361` the LO again advertises a **46.875 MHz floor** it does not
+  honour, exactly as the pre-2026-07-30 firmware did; the honest
+  `[70000000 1 6000000000]` belonged to the AD9364 configuration. Capability
+  detection probes the edge rather than trusting the advertised value — cheap,
+  and it is what caught the lie both times.
 - A Pluto cannot stream at full rate; captures are single DMA bursts. Measured
   sustained buffer throughput, 16 MB reads:
 
@@ -273,13 +295,56 @@ produced a longer list; these are the parts that survived verification:
    absolute ranging is unproven. Needs an attenuated loopback and repeated
    captures across TX restarts and retunes.
 
-Deferred, not forgotten: a coherent phase reference needs a second receive
-channel. The board runs as **AD9364, 1R1T** — `cf-ad9361-lpc` exposes two
-channels which are I/Q of one receiver. Pluto+ hardware often carries an
-AD9361 (2R2T) and the driver binds whatever `compatible` says; the old trap
-where `ad9361` was downgraded to `ad9363a` applied to non-Rev.C model strings,
-and this board now reports Rev.C. Worth investigating before planning any
-work that assumes RX2 exists.
+**RX2 exists but is unproven.** The second receive and transmit channel was
+unlocked on 2026-07-31 (see the hardware notes for the u-boot fix). Enumeration
+and independence are confirmed — masking RX1 in the AD9361 BIST generator drives
+it to numerically zero while RX2 stays at full scale, so `voltage0/1` is RX1,
+`voltage2/3` is RX2, and they are genuinely separate streams rather than one
+buffer demuxed twice. What is *not* established is RF performance. This is an
+out-of-spec unlock of an **AD9363** die: ADI neither specifies nor bins channel
+2 on this part, and the Pluto+ channel-2 front end is not ADI's layout.
+
+So do not plan work that assumes RX2 is as good as RX1, and above all do not
+assume the two are phase-coherent — a second receive channel only buys a
+coherent phase reference if the RX1/RX2 offset is either fixed or re-solvable.
+Whether it survives a retune, a gain change or a sample-rate change is exactly
+what is unmeasured. The characterization suite is `tools/chancal/`; read its
+README before running anything, and note that its results are bench notes, not
+platform measurements, because it drives libiio directly and so does not pass
+through `SafetyController`.
+
+Two things learned while building it, both worth knowing before you write
+capture code against this board:
+
+- **The TX monitor path is unavailable.** `rf_port_select` returns `EINVAL` for
+  `TX_MONITOR1`, `TX_MONITOR2` and `TX_MONITOR1_2` on every RX channel, in
+  every ENSM state the board accepts, even though the device tree carries the
+  `adi,txmon-*` properties. Cause not established; a 2R2T interaction is
+  plausible. There is therefore no cable-free way to observe the transmitters.
+- **The running deployment configures the hardware radio, so bench tooling and
+  the server will fight over it.** `radios.json` registers the Pluto as
+  `ip:pluto.boblab.net` and the server applies its own config on connect —
+  observed 2026-07-31, a server restart moved the LO to 915 MHz and put RX1
+  back in `manual` under a bench script that had just set something else. Two
+  writers on one AD9361 means neither can trust a readback. **Stop the server,
+  or disable the radio in the UI, before running anything in `tools/chancal/`**,
+  and re-connect afterwards so the platform's cached config is not stale
+  against hardware someone else has moved.
+- **The radio can end up in `ensm_mode = alert`, with its receivers idle, and
+  nothing announces it.** Captures still succeed, gain writes are accepted and
+  silently ignored, `hardwaregain` reads back values that drift on their own,
+  and the DMA returns a static pattern that scores a *perfect* coherence — a
+  flawless-looking result from a radio that is not receiving. The tell is a
+  `hardwaregain` readback that does not match what you wrote; recovery is
+  `ensm_mode = fdd`. Seen once, right after a rejected `ensm_mode` write, but
+  with a second writer on the bus at the time the cause is **not established** —
+  do not assume your own last write caused it.
+- **A persistent RX buffer returns three stale buffers after any attribute
+  change.** Measured by switching the BIST mask: refills 1–3 returned the old
+  data and only refill 4 reflected the change. `PlutoDevice.receive()` is safe
+  because it destroys the buffer before each capture, which flushes the queue
+  outright — but anything that holds a buffer across a reconfiguration must
+  discard four, or it will record samples the RF config never applied to.
 
 ## Gotchas
 

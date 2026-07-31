@@ -9,3 +9,7 @@ pluto_firmware/
 # local deployment settings and data archives
 deploy/forge-vision.env
 backups/
+
+# bench characterization results: per-run notes tied to one board state,
+# not authoritative records - findings that matter get written up in prose
+tools/chancal/results/
