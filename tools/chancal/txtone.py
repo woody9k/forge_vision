@@ -39,7 +39,10 @@ class Tone:
 
     Always used as `with Tone(...)` so the transmitter is shut down on the way
     out of *any* path, including an exception - the same try/finally discipline
-    the platform's SafetyController enforces (rule 5).
+    the platform's SafetyController enforces (rule 5). That includes a failure
+    *during* entry, which `with` does not cover on its own: Python calls
+    __exit__ only if __enter__ returns, so __enter__ shuts down for itself
+    before re-raising. Covered by tests/test_chancal_txgate.py.
     """
 
     def __init__(self, radio: common.Radio, chan: int, offset_hz: float,
@@ -83,6 +86,21 @@ class Tone:
                 ch.attrs["scale"].value = "0"
 
     def __enter__(self):
+        # Python calls __exit__ only if __enter__ *returns*. Anything that
+        # raises partway through here would otherwise leave the transmitter
+        # keyed with no cleanup — and `Radio.set` writes before it verifies,
+        # so an AttrMismatch on the gain write means the gain landed and then
+        # the exception fired. That is not hypothetical on this board: in
+        # `ensm_mode = alert` the driver accepts gain writes, ignores them,
+        # and lets `hardwaregain` readback drift, which is exactly what trips
+        # the tolerance check (see tools/chancal/README.md).
+        try:
+            return self._start()
+        except BaseException:
+            self._shutdown()
+            raise
+
+    def _start(self):
         r = self.radio
         # every other generator off first, so the spectrum contains exactly
         # what we think it contains
@@ -110,17 +128,30 @@ class Tone:
               f"gain {actual}, LO {r.tx_lo/1e6:.3f} MHz")
         return self
 
-    def __exit__(self, *exc):
+    def _shutdown(self):
+        """Silence the generators and floor both transmitters, best effort.
+
+        Shared by the failed-entry path and __exit__, so there is exactly one
+        description of what "off" means. Every step is individually guarded:
+        a failure attenuating TX1 must not prevent the attempt on TX2.
+        """
         r = self.radio
         try:
             self._silence_all()
-        finally:
-            for ch in (0, 1):
-                try:
-                    r.set(f"voltage{ch}", "hardwaregain", f"{OFF_TX_GAIN_DB:.2f}",
-                          output=True, tol=0.5)
-                except Exception as err:            # noqa: BLE001
-                    print(f"  !! could not attenuate TX{ch + 1}: {err}")
-            print(f"  [TX{self.chan} OFF] tones silenced, both TX at "
-                  f"{OFF_TX_GAIN_DB} dB")
+        except Exception as err:                    # noqa: BLE001
+            print(f"  !! could not silence tone generators: {err}")
+        for ch in (0, 1):
+            try:
+                r.set(f"voltage{ch}", "hardwaregain", f"{OFF_TX_GAIN_DB:.2f}",
+                      output=True, tol=0.5)
+            except Exception as err:                # noqa: BLE001
+                print(f"  !! could not attenuate TX{ch + 1}: {err}")
+
+    def __exit__(self, *exc):
+        # Same shutdown as the failed-entry path. It swallows and reports its
+        # own errors rather than raising, so a cleanup problem cannot mask the
+        # exception that caused the exit.
+        self._shutdown()
+        print(f"  [TX{self.chan} OFF] tones silenced, both TX at "
+              f"{OFF_TX_GAIN_DB} dB")
         return False

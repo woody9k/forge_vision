@@ -213,7 +213,14 @@ conducted numbers are right and the antenna setup is the variable.
   the command line.
 * Every TX path is a `with` block; both transmitters are silenced and
   attenuated to −89.75 dB in a `finally`, and `t2_tx.py` repeats that at the
-  outermost level in case something dies in between.
+  outermost level in case something dies in between. The `with` block alone
+  does **not** cover a failure while the tone is being brought up — Python
+  calls `__exit__` only if `__enter__` returns — so `Tone.__enter__` shuts
+  down for itself before re-raising. That path is reachable here rather than
+  theoretical: `Radio.set` writes before it verifies, and in `ensm_mode =
+  alert` this board accepts gain writes, ignores them, and lets `hardwaregain`
+  readback drift, which is exactly what raises `AttrMismatch` *after* the gain
+  has landed. Pinned by `tests/test_chancal_txgate.py`.
 * The default LO is 2.45 GHz — inside an ISM band, so even a leak is benign.
   If you sweep the full 70 MHz–6 GHz range, keep the drive at minimum.
 * These scripts talk to libiio directly and therefore **do not** pass through
