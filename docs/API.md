@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785509612.1697693,
+    "time": 1785517428.7685828,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -391,7 +391,7 @@ Configured narration endpoints.
     "google/gemma-4-e4b",
     "... 4 total"
    ],
-   "latency_s": 0.0,
+   "latency_s": 0.02,
    "error": ""
   }
  }
@@ -721,6 +721,55 @@ Where a radio lives, in whatever form a person would type it.
 | `name` | string | no | `"band survey"` |  |
 | `operator` | string | no | `""` |  |
 
+### `POST /api/vna/calibration_check`
+
+Verify a calibration covers a span by measuring a known thru.
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `start_hz` | number (> 0.0) | yes | — |  |
+| `stop_hz` | number (> 0.0) | yes | — |  |
+| `points` | integer (>= 10.0, <= 301.0) | no | `101` |  |
+| `port` | string matching `^/dev/[A-Za-z0-9_.\-/]+$` | no | `"/dev/nanovna"` |  |
+
+### `POST /api/vna/sweep`
+
+Sweep the VNA, optionally storing the result against a component.
+
+`ports` is the operator's declaration of what is physically connected: 1
+for a reflection-only measurement (an antenna on port 1) or 2 for a thru
+(a cable between both ports). The instrument returns an S21 column either
+way, so without this a one-port sweep would store a column of noise
+labelled as insertion loss.
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `start_hz` | number (> 0.0) | yes | — |  |
+| `stop_hz` | number (> 0.0) | yes | — |  |
+| `points` | integer (>= 2.0, <= 301.0) | no | `101` |  |
+| `ports` | integer (>= 1.0, <= 2.0) | no | `2` |  |
+| `port` | string matching `^/dev/[A-Za-z0-9_.\-/]+$` | no | `"/dev/nanovna"` |  |
+| `comp_id` | string | no | `""` |  |
+
+### `POST /api/vna/sweep_job`
+
+Sweep the VNA, optionally storing the result against a component.
+
+`ports` is the operator's declaration of what is physically connected: 1
+for a reflection-only measurement (an antenna on port 1) or 2 for a thru
+(a cable between both ports). The instrument returns an S21 column either
+way, so without this a one-port sweep would store a column of noise
+labelled as insertion loss.
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `start_hz` | number (> 0.0) | yes | — |  |
+| `stop_hz` | number (> 0.0) | yes | — |  |
+| `points` | integer (>= 2.0, <= 301.0) | no | `101` |  |
+| `ports` | integer (>= 1.0, <= 2.0) | no | `2` |  |
+| `port` | string matching `^/dev/[A-Za-z0-9_.\-/]+$` | no | `"/dev/nanovna"` |  |
+| `comp_id` | string | no | `""` |  |
+
 ---
 
 ## Full endpoint index
@@ -813,3 +862,8 @@ Where a radio lives, in whatever form a person would type it.
 | GET | `/api/status` | Status |
 | POST | `/api/stepped/run` | Stepped Run ⚠️ transmits |
 | POST | `/api/survey` | Survey |
+| POST | `/api/vna/calibration_check` | Vna Calibration Check |
+| GET | `/api/vna/discover` | Vna Discover |
+| GET | `/api/vna/status` | Vna Status |
+| POST | `/api/vna/sweep` | Vna Sweep |
+| POST | `/api/vna/sweep_job` | Vna Sweep Job |

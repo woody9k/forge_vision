@@ -13,13 +13,17 @@ system the spec requires.
 
 **Implemented is not validated.** Most of that has only ever run against the
 simulator. What has been exercised on a real Pluto+ is the receive path:
-capture, band survey, transport selection, and the safety interlocks.
+capture, band survey, transport selection, and the safety interlocks. RF
+component measurement is validated against a real NanoVNA — a separate
+instrument, and the only part of the platform that measures the signal path
+itself rather than through it.
 
 | Area | Maturity |
 |---|---|
 | Receive path, raw capture, band survey | bench validated |
 | Device discovery, transport selection, chain provenance | bench validated |
 | Safety interlocks, TX authorization, emergency stop | bench validated (never keyed) |
+| VNA component measurement (antennas, cables) | bench validated on a NanoVNA-F V2 |
 | FMCW range profiles, stepped-frequency synthesis | simulator validated |
 | B-scan, migration, site fusion, Scene Builder, SAGE | implemented, simulator only |
 | Bistatic geometry, coherent phase reference | not implemented |
@@ -230,6 +234,29 @@ assumed otherwise.
 Bench safety notes: start with the `bench_cabled` frequency profile, keep TX
 gain at the -30 dB default, and run the attenuated loopback experiment
 (REF-01, 30–40 dB inline attenuation TX→RX) before any antenna work.
+
+### Vector network analyser
+
+A NanoVNA measures the antennas and cables in the signal path, so their loss
+and match are recorded rather than assumed. Attach one over USB and use
+**Hardware → sweep the instrument**; `pyserial` is already a dependency, but
+the serial port needs a udev rule — see
+[docs/DEPLOY.md](docs/DEPLOY.md#vector-network-analyser-nanovna).
+
+Developed against a **NanoVNA-F V2** (50 kHz–3 GHz, firmware 0.6.2). Two
+things about the results are worth knowing before quoting them:
+
+- **A sweep does not prove it was calibrated.** The firmware reports which
+  standards are captured but never the span they cover, and it silently
+  interpolates a calibration onto whatever span you sweep. Every stored
+  measurement is therefore marked *calibration span unverified* until you run
+  **Check calibration** against a known thru, which measures the residual and
+  says whether it holds.
+- **Loss flatters a match.** For a two-port part, S11 is measured through the
+  component's own loss, which attenuates any reflection twice. On this bench a
+  5.8 dB cable read −24 dB mean while a low-loss thru read −16 dB on the same
+  instrument — the lossier part looked better matched. The UI says so next to
+  the rating; read insertion loss for cables, VSWR for antennas.
 
 ## Not yet implemented
 

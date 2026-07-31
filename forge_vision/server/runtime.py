@@ -460,6 +460,189 @@ class Runtime:
             status["tx_revoked"] = revoked
         return status
 
+    # -- vector network analyser (FR-RFC-003/004) --------------------------
+    #
+    # The VNA is an instrument, not a transmitter under rule 5. Its source is
+    # fixed-level (~ -9 dBm), is not operator-controllable, and free-runs
+    # whenever the instrument is powered, so the TX fingerprint — frequency,
+    # occupied span, waveform, gains, rate, profile, declared path — has
+    # nothing to bind to and arming the bench to measure a cable would be
+    # theatre. What it does do is sweep across bands while attached to an
+    # antenna, so every sweep is recorded to the safety audit log and its span
+    # is checked against the active frequency profile. The check warns and is
+    # recorded; it does not block, because a broadband sweep into a 50 ohm
+    # load radiates essentially nothing and blocking it would make the
+    # instrument useless for the job it is here to do. Making that judgement
+    # visible is the point — see `band_check` in every sweep result.
+
+    def _vna_band_check(self, start_hz: float, stop_hz: float) -> dict:
+        """Compare a swept span against the active profile (FR-SAF-007)."""
+        bands = self.safety.limits.allowed_bands()
+        profile = self.safety.limits.active_profile
+        inside = (not bands) or any(lo <= start_hz and stop_hz <= hi
+                                    for lo, hi in bands)
+        out = {
+            "profile": profile,
+            "allowed_bands": [[float(lo), float(hi)] for lo, hi in bands],
+            "swept_hz": [float(start_hz), float(stop_hz)],
+            "inside_profile": bool(inside),
+            "blocking": False,
+            "warning": None,
+        }
+        if not inside:
+            out["warning"] = (
+                f"This sweep covers {start_hz / 1e6:.3f}-{stop_hz / 1e6:.1f} MHz, "
+                f"which is not inside the active profile '{profile}'. Into a "
+                "load or a cable that is a closed circuit and radiates "
+                "essentially nothing; into an antenna it is emission outside "
+                "the profile. The sweep is recorded either way — check what is "
+                "on the port.")
+        return out
+
+    def vna_discover(self) -> list[dict]:
+        """Serial ports that answer as a VNA (probed, not assumed)."""
+        from ..rfcomponents import nanovna
+        return nanovna.discover()
+
+    def vna_status(self, port: str = "/dev/nanovna") -> dict:
+        """Identity, battery, sweep settings and calibration state."""
+        from ..rfcomponents import nanovna
+        with nanovna.NanoVNA(port) as vna:
+            return {
+                "port": port,
+                **vna.identify(),
+                "battery_mv": vna.battery_mv(),
+                "sweep": vna.sweep_settings(),
+                "calibration": vna.cal_status(),
+                "max_points": nanovna.MAX_SWEEP_POINTS,
+            }
+
+    def vna_sweep(self, start_hz: float, stop_hz: float, points: int = 101,
+                  ports: int = 2, port: str = "/dev/nanovna",
+                  comp_id: str = "", ctx=None) -> dict:
+        """Sweep the instrument, optionally attaching the result to a component.
+
+        `ports` is the operator's declaration of what is actually connected.
+        It matters: the instrument always returns an S21 column, so a
+        one-port antenna measurement with nothing on port 2 still produces a
+        column of noise. Storing that as "insertion loss" would be inventing a
+        measurement nobody made, so a reflection-only sweep discards it here
+        rather than carrying it forward (rule 1).
+        """
+        from ..rfcomponents import nanovna
+        if ports not in (1, 2):
+            raise ValueError("ports must be 1 (reflection) or 2 (thru)")
+
+        band = self._vna_band_check(start_hz, stop_hz)
+        if ctx is not None:
+            ctx.progress(0.1, "sweeping")
+        with nanovna.NanoVNA(port) as vna:
+            ident = vna.identify()
+            cal = vna.cal_status()
+            data = vna.scan(start_hz, stop_hz, points)
+        if ctx is not None:
+            ctx.progress(0.8, "analysing")
+
+        self.safety.audit(
+            "vna_sweep", port=port, instrument=ident.get("model", ""),
+            serial_number=ident.get("serial_number", ""),
+            start_hz=float(start_hz), stop_hz=float(stop_hz), points=int(points),
+            declared_ports=ports, component=comp_id or None,
+            profile=band["profile"], inside_profile=band["inside_profile"])
+
+        if ports == 1:
+            data.pop("s21", None)
+            data["ports"] = 1
+
+        calibration = {
+            "known": False,
+            "standards": cal["standards"],
+            "applied": cal["applied"],
+            "instrument_reported": cal["raw"],
+            "note": ("The instrument reports which standards are captured but "
+                     "not the span they were captured over, and it interpolates "
+                     "a calibration onto whatever span is swept. Run a "
+                     "verification sweep against a known standard to establish "
+                     "whether this calibration covers this span."),
+        }
+
+        result = {
+            "instrument": ident,
+            "port": port,
+            "band_check": band,
+            "calibration": calibration,
+            "points": len(data["freqs_hz"]),
+            "start_hz": data["freqs_hz"][0],
+            "stop_hz": data["freqs_hz"][-1],
+            "declared_ports": ports,
+        }
+
+        if comp_id:
+            comp = self.components.attach_measurement(
+                comp_id, data,
+                source={"kind": "instrument",
+                        "instrument": ident.get("model", ""),
+                        "serial_number": ident.get("serial_number", ""),
+                        "port": port,
+                        "declared_ports": ports},
+                calibration=calibration)
+            result["component"] = comp
+        else:
+            # Not stored — hand back the derived curves so the operator can
+            # look before committing a measurement to a component.
+            from ..rfcomponents.touchstone import analyze_s11, analyze_s21
+            result["s11"] = analyze_s11(data["freqs_hz"], data["s11"])
+            if "s21" in data:
+                result["s21"] = analyze_s21(data["freqs_hz"], data["s21"])
+            result["freqs_hz"] = data["freqs_hz"]
+        if ctx is not None:
+            ctx.progress(1.0, "done")
+        return result
+
+    def vna_sweep_job(self, **kwargs):
+        """Run `vna_sweep` as a cancellable background job (FR-API-003)."""
+        span = f"{kwargs.get('start_hz', 0) / 1e6:.3f}-{kwargs.get('stop_hz', 0) / 1e6:.1f} MHz"
+        return self.jobs.submit(
+            "vna_sweep", f"VNA sweep {span}",
+            lambda ctx: self.vna_sweep(ctx=ctx, **kwargs),
+            params=dict(kwargs))
+
+    def vna_verify_calibration(self, start_hz: float, stop_hz: float,
+                               points: int = 101, port: str = "/dev/nanovna") -> dict:
+        """Measure a known thru and judge whether the calibration covers this span.
+
+        The firmware will not say what span a calibration was taken over, so
+        this measures the residual instead: a calibration that covers the span
+        drives S21 to 0 dB across all of it, and one that was interpolated
+        outward leaves its error concentrated at the band edges.
+
+        The operator must have a known thru connected. This cannot verify
+        that, which is why the result records what was asked of them rather
+        than asserting the standard was in place.
+        """
+        from ..rfcomponents import nanovna
+        band = self._vna_band_check(start_hz, stop_hz)
+        with nanovna.NanoVNA(port) as vna:
+            ident = vna.identify()
+            cal = vna.cal_status()
+            data = vna.scan(start_hz, stop_hz, points)
+        residual = nanovna.analyze_thru_residual(data["freqs_hz"], data["s21"])
+        self.safety.audit(
+            "vna_calibration_check", port=port,
+            start_hz=float(start_hz), stop_hz=float(stop_hz), points=int(points),
+            covers_span=residual["covers_span"],
+            max_deviation_db=residual["max_deviation_db"],
+            profile=band["profile"], inside_profile=band["inside_profile"])
+        return {
+            "instrument": ident,
+            "band_check": band,
+            "instrument_reported": cal["raw"],
+            "standards": cal["standards"],
+            "assumed_connected": "thru",
+            "residual": residual,
+            "checked_at": time.time(),
+        }
+
     def declare_path_attenuation(self, db: float) -> dict:
         """Record TX->RX isolation, withdrawing TX approved under the old value."""
         out = self.safety.declare_path_attenuation(db)

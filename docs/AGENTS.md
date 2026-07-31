@@ -36,6 +36,8 @@ back and reprocessed.
 | **Site** | A physical place with a coordinate frame. Scans register into it with an origin and heading. |
 | **Finding** | A response that survived cross-scan fusion. Carries evidence links, a depth *interval*, and separate confidence for lateral position and depth. |
 | **Fact** | SAGE's unit of output. Every one has an epistemic label and, unless labelled `unknown`, evidence links. |
+| **Component** | A physical part in the signal path — antenna, cable, adapter, attenuator. Carries an optional `vna` measurement with derived S11/VSWR bands and, for two-port sweeps, insertion loss. |
+| **VNA measurement** | A sweep stored against a component. Records its `source` (a file import or a named instrument) and its `calibration` provenance, which stays `known: false` until a residual check establishes the calibration covers the span. |
 
 ## Epistemic labels
 
@@ -75,6 +77,17 @@ interlock depends on it. Asserting it from software hollows out a safeguard
 that exists to prevent destroying a receiver.
 
 **`POST /api/safety/stop` is always allowed.** Stopping is safe.
+
+**A VNA sweep emits RF, and is deliberately not gated.** `POST /api/vna/sweep`
+and `/api/vna/calibration_check` drive the instrument's own source (~ −9 dBm,
+fixed level, free-running whenever it is powered). It is not behind the
+transmit interlock — there is no waveform, gain or profile for a TX
+fingerprint to bind to, and requiring the bench to be armed to measure a cable
+would be theatre. That is not permission to sweep casually: into a load or a
+cable it is a closed circuit, but **into an antenna it is emission**, and you
+generally cannot tell which from the API. Every sweep is written to the safety
+audit log with its span. Ask before sweeping when you do not know what is on
+the port.
 
 ### Transmit permission belongs to a configuration, not to a device
 
@@ -164,6 +177,25 @@ says `config_modified`, the patching no longer matches the saved configuration
 it is named after — do not describe a capture as coming from that
 configuration.
 
+**Measure an antenna or cable with the VNA**
+```
+GET  /api/vna/discover              → serial ports that answered as a VNA
+GET  /api/vna/status                → model, firmware, battery, sweep, calibration
+POST /api/vna/sweep                 → sweep; attaches to a component if comp_id given
+POST /api/vna/sweep_job             → same, as a cancellable job
+POST /api/vna/calibration_check     → measure a known thru, judge the calibration
+```
+
+`ports` is **required judgement about the physical world, not a formatting
+choice**: `2` for a thru (a cable between both ports), `1` for reflection only
+(an antenna on port 1). The instrument returns an S21 column either way, so
+declaring `2` when nothing is on port 2 stores a column of noise as insertion
+loss. If you do not know what is physically connected, ask — do not guess.
+
+Every sweep result carries a `band_check`. When `inside_profile` is false the
+swept span leaves the active frequency profile; the sweep still runs and is
+recorded, and the `warning` explains why that may or may not matter. Relay it.
+
 **Ask about a finding** (this is the highest-value path)
 ```
 GET  /api/sites                                  → pick a site
@@ -193,6 +225,29 @@ GET  /api/jobs/{job_id}?include_result=true
 ---
 
 ## Reading results honestly
+
+**A VNA sweep is not evidence it was calibrated.** The instrument reports
+which standards are captured but never the span they cover, and it silently
+interpolates a calibration onto whatever span is swept. Every stored
+measurement carries `vna.calibration`; while `known` is false the numbers are
+readings, not verified measurements, and must be described that way.
+`POST /api/vna/calibration_check` is what turns that into an answer — it
+measures the residual against a known thru, and reports edge-weighted error as
+the signature of an interpolated calibration. Its verdict is deliberately
+hedged ("consistent with"), because a marginal connector produces the same
+pattern. Do not upgrade it to a certificate.
+
+**Loss flatters a match.** For a two-port component, S11 is measured through
+the part's own loss, which attenuates any reflection twice. A 6 dB pad shows a
+near-perfect VSWR and is a useless feedline. The `recommended` /
+`marginal` / `unsuitable` band ratings describe an **antenna**; for a cable or
+attenuator, quote insertion loss instead. Measured on this bench: a 5.8 dB
+cable read −24 dB mean S11 while a low-loss thru read −16 dB on the same
+instrument — the lossier part looked better matched.
+
+**Cable loss is frequency-dependent, so a bare figure is not a measurement.**
+Insertion loss is always reported with the frequency it was taken at. Keep
+them together; "1.4 dB" alone is a claim nobody can check.
 
 **Depth is an interval, not a number.** `depth_interval_m` reflects
 permittivity uncertainty. If the medium is uncertain the interval is wide and
@@ -227,9 +282,14 @@ limits of its own measurement. Relay them.
 - The platform runs against a **simulated radio** by default (`sim-pluto-0`),
   which models delays, leakage, noise, clipping, and PLL phase jitter.
 - A real Pluto appears as `pluto-usb:` or `pluto-ip:...` when attached.
+- A **NanoVNA-F V2** (50 kHz–3 GHz) measures antennas and cables. It is a
+  separate instrument from the radio and is not part of the device registry —
+  reach it through `/api/vna/*`, not `/api/devices/*`.
 - **Nothing has ever transmitted on this bench.** The receive path is verified
   against real hardware; the transmit path is exercised only in simulation.
-  Treat any transmit-derived result as unvalidated until that changes.
+  Treat any transmit-derived result as unvalidated until that changes. The
+  VNA's own source is the sole exception, and it is an instrument stimulus,
+  not the platform's transmit path.
 
 ### Maturity — do not confuse "implemented" with "validated"
 
@@ -239,6 +299,8 @@ Code existing is not evidence that a physical claim holds. As of this writing:
 |---|---|
 | Receive path, capture, band survey | **bench validated** on a real Pluto+ |
 | Transport selection, chain provenance, safety interlocks | **bench validated** |
+| VNA component measurement | **bench validated** on a NanoVNA-F V2 — but read
+  `vna.calibration` before quoting any of it |
 | Range profiles, stepped-frequency synthesis | **simulator validated** — the
   headline resolution figures come from simulation |
 | Migration, site fusion, Scene Builder, SAGE | **implemented**, exercised in

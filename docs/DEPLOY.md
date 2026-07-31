@@ -140,6 +140,34 @@ A host can also have a writable node for unrelated reasons (a broad rule from
 some other package), in which case it works with no Pluto rule at all. That
 is luck, not provisioning, and it does not survive a rebuild.
 
+### Vector network analyser (NanoVNA)
+
+Optional; used to characterise antennas and cables from the Hardware page.
+Needs `pyserial`, which is in `requirements.txt` — no system packages.
+
+The instrument enumerates as an STM32 CDC-ACM port at `/dev/ttyACM0`, which
+Ubuntu creates as `root:dialout 0660`. **The deployment user is typically not
+in `dialout`**, so the server gets `EACCES` and the UI reports the instrument
+as undetected. Unlike the Pluto rule above, granting to `plugdev` avoids a
+re-login *and* a restart when the service account already carries that group:
+
+```bash
+sudo tee /etc/udev/rules.d/60-nanovna.rules >/dev/null <<'RULE'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", ATTRS{product}=="NanoVnaPro Virtual ComPort", GROUP="plugdev", MODE="0660", SYMLINK+="nanovna"
+RULE
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty --action=change
+```
+
+Check with `ls -l /dev/nanovna` — the symlink is created by the rule, so its
+presence proves the rule matched. `GET /api/vna/discover` then probes the port
+and reports what actually answered.
+
+`0483:5740` is STMicroelectronics' generic virtual COM port and is shared with
+many unrelated STM32 boards, hence the `product` match. A different VNA model
+will report a different product string; check with
+`udevadm info -a -n /dev/ttyACM0 | grep product` and adjust, or drop the
+`ATTRS{product}` clause if this host has no other STM32 serial devices.
+
 ### `usb:` or `ip:192.168.2.1` — choosing a backend
 
 A Pluto on USB is a *composite* device: the radio and a USB-ethernet gadget

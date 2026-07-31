@@ -242,6 +242,35 @@ class AdoptLossRequest(Strict):
     freq_hz: float | None = Field(None, gt=0)
 
 
+class VnaSweepRequest(Strict):
+    """Sweep the VNA, optionally storing the result against a component.
+
+    `ports` is the operator's declaration of what is physically connected: 1
+    for a reflection-only measurement (an antenna on port 1) or 2 for a thru
+    (a cable between both ports). The instrument returns an S21 column either
+    way, so without this a one-port sweep would store a column of noise
+    labelled as insertion loss.
+    """
+    start_hz: float = Field(..., gt=0)
+    stop_hz: float = Field(..., gt=0)
+    points: int = Field(101, ge=2, le=301)
+    ports: int = Field(2, ge=1, le=2)
+    # constrained to /dev/: this API has no authentication (see docs/DEPLOY.md),
+    # so an unbounded path would let a caller point pyserial at any file
+    port: str = Field("/dev/nanovna", pattern=r"^/dev/[A-Za-z0-9_.\-/]+$")
+    comp_id: str = ""
+
+
+class VnaCalCheckRequest(Strict):
+    """Verify a calibration covers a span by measuring a known thru."""
+    start_hz: float = Field(..., gt=0)
+    stop_hz: float = Field(..., gt=0)
+    points: int = Field(101, ge=10, le=301)
+    # constrained to /dev/: this API has no authentication (see docs/DEPLOY.md),
+    # so an unbounded path would let a caller point pyserial at any file
+    port: str = Field("/dev/nanovna", pattern=r"^/dev/[A-Za-z0-9_.\-/]+$")
+
+
 class ChainConfigRequest(Strict):
     """Save the working chain as a reusable named configuration."""
     name: str = Field(min_length=1)

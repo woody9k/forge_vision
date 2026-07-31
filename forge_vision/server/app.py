@@ -779,6 +779,58 @@ async def import_vna(comp_id: str, file: UploadFile):
         raise _fail(exc)
 
 
+# -- vector network analyser -------------------------------------------------
+@app.get("/api/vna/discover")
+def vna_discover():
+    """Serial ports that answer as a VNA when probed (FR-RFC-003)."""
+    try:
+        return {"instruments": runtime.vna_discover()}
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/vna/status")
+def vna_status(port: str = "/dev/nanovna"):
+    """Identity, battery, sweep settings and calibration state (FR-RFC-003)."""
+    try:
+        return runtime.vna_status(port)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/vna/sweep")
+def vna_sweep(body: S.VnaSweepRequest):
+    """Sweep the VNA, optionally attaching the result to a component."""
+    try:
+        return runtime.vna_sweep(
+            start_hz=body.start_hz, stop_hz=body.stop_hz, points=body.points,
+            ports=body.ports, port=body.port, comp_id=body.comp_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/vna/sweep_job")
+def vna_sweep_job(body: S.VnaSweepRequest):
+    """Same sweep, as a cancellable background job (FR-API-003)."""
+    try:
+        return runtime.vna_sweep_job(
+            start_hz=body.start_hz, stop_hz=body.stop_hz, points=body.points,
+            ports=body.ports, port=body.port, comp_id=body.comp_id).to_dict()
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/vna/calibration_check")
+def vna_calibration_check(body: S.VnaCalCheckRequest):
+    """Measure a known thru and judge whether the calibration covers the span."""
+    try:
+        return runtime.vna_verify_calibration(
+            start_hz=body.start_hz, stop_hz=body.stop_hz,
+            points=body.points, port=body.port)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- simulator ---------------------------------------------------------------
 @app.post("/api/sim/{device_id}/caps")
 def sim_caps(device_id: str, body: S.SimCapsRequest):
