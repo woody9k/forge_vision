@@ -2185,6 +2185,106 @@ $("vna-upload").onclick = async () => {
   openComponent(selectedComp);
 };
 
+// -- VNA instrument ---------------------------------------------------------
+// The VNA is not gated by SafetyController: its source is fixed-level and
+// free-runs whenever the instrument is powered, so there is nothing for a TX
+// fingerprint to bind to. Every sweep is audited and its span checked against
+// the active profile, and an out-of-profile sweep is surfaced here rather
+// than blocked — see runtime._vna_band_check.
+
+function vnaNotice(html, tone) {
+  const colors = {
+    warn: "#2b2410;border:1px solid #5c4c1c;color:#e8c96a",
+    bad: "#1c1116;border:1px solid #3a2028;color:#a06070",
+    ok: "#12241d;border:1px solid #1f4a38;color:#86dfc0",
+  };
+  $("vna-notice").innerHTML = html
+    ? `<p class="tag" style="background:${colors[tone] || colors.warn};
+       display:block;padding:6px 8px">${html}</p>` : "";
+}
+
+async function vnaDetect() {
+  try {
+    const s = await api("/api/vna/status");
+    $("vna-instrument").textContent =
+      `${s.model} fw ${s.firmware} — ${s.frequency_range}` +
+      (s.battery_mv ? ` — ${(s.battery_mv / 1000).toFixed(2)} V` : "");
+    const cal = s.calibration;
+    // Never render this as "calibrated" full stop: the firmware reports which
+    // standards are captured but not the span they cover.
+    $("vna-cal").textContent = cal.applied
+      ? `cal: ${cal.standards.join(" ")} applied — span unverified`
+      : "cal: none applied";
+    $("vna-points").innerHTML = [101, 201, 301]
+      .filter((p) => p <= s.max_points)
+      .map((p) => `<option>${p}</option>`).join("");
+    vnaNotice("", "ok");
+    return s;
+  } catch (e) {
+    $("vna-instrument").textContent = "instrument not detected";
+    $("vna-cal").textContent = "";
+    vnaNotice(`Could not reach the VNA: ${esc(String(e.message || e))}`, "bad");
+    return null;
+  }
+}
+
+$("vna-detect").onclick = vnaDetect;
+
+$("vna-sweep").onclick = async () => {
+  if (!selectedComp) { alert("select a component first"); return; }
+  const body = {
+    start_hz: Number($("vna-start").value) * 1e6,
+    stop_hz: Number($("vna-stop").value) * 1e6,
+    points: Number($("vna-points").value),
+    ports: Number($("vna-ports").value),
+    comp_id: selectedComp,
+  };
+  const btn = $("vna-sweep");
+  btn.disabled = true; btn.textContent = "Sweeping…";
+  try {
+    const r = await api("/api/vna/sweep", { method: "POST", body });
+    const msgs = [];
+    if (r.band_check && !r.band_check.inside_profile) {
+      msgs.push(esc(r.band_check.warning));
+    }
+    msgs.push("Calibration span is unverified — run <b>Check calibration</b> "
+      + "against a known thru to establish whether the instrument's "
+      + "calibration covers this span.");
+    vnaNotice(msgs.join("<br><br>"), "warn");
+    openComponent(selectedComp);
+  } catch (e) {
+    vnaNotice(`Sweep failed: ${esc(String(e.message || e))}`, "bad");
+  } finally {
+    btn.disabled = false; btn.textContent = "Sweep into this component";
+  }
+};
+
+$("vna-calcheck").onclick = async () => {
+  const body = {
+    start_hz: Number($("vna-start").value) * 1e6,
+    stop_hz: Number($("vna-stop").value) * 1e6,
+    points: Number($("vna-points").value),
+  };
+  const btn = $("vna-calcheck");
+  btn.disabled = true; btn.textContent = "Measuring…";
+  try {
+    const r = await api("/api/vna/calibration_check", { method: "POST", body });
+    const res = r.residual;
+    vnaNotice(
+      `<b>${res.covers_span ? "Calibration covers this span" : "Calibration is "
+        + "not established for this span"}</b><br>${esc(res.verdict)}<br>`
+      + `residual max ${res.max_deviation_db} dB, mean ${res.mean_deviation_db} dB `
+      + `(edges ${res.edge_mean_db} dB vs mid-band ${res.mid_mean_db} dB)<br>`
+      + `<span class="mut">Assumes a known thru was connected — the instrument `
+      + `cannot see the port.</span>`,
+      res.covers_span ? "ok" : "warn");
+  } catch (e) {
+    vnaNotice(`Calibration check failed: ${esc(String(e.message || e))}`, "bad");
+  } finally {
+    btn.disabled = false; btn.textContent = "Check calibration";
+  }
+};
+
 function renderBands(c) {
   if (!c.vna) { $("comp-bands").innerHTML = ""; return; }
   const chips = c.vna.analysis.bands.map((b) => {
@@ -2194,7 +2294,38 @@ function renderBands(c) {
     return `<span class="tag" style="background:${color}">
       ${fmtHz(b.start_hz)}–${fmtHz(b.stop_hz)} ${esc(b.rating)} (VSWR≥${b.min_vswr})</span>`;
   }).join(" ");
-  $("comp-bands").innerHTML = `<p>${chips}</p>`;
+
+  const notes = [];
+
+  // A two-port sweep measures S11 *through* the component's own loss, and
+  // loss attenuates any reflection twice. A 6 dB pad shows a near-perfect
+  // VSWR and is a useless feedline. Measured on this bench: an 8 in low-loss
+  // thru read -16 dB at 2.5 GHz while a 5.8 dB cable read -24 dB mean on the
+  // same instrument — the lossier part looked better matched. Presenting the
+  // rating unqualified here invites exactly the wrong conclusion.
+  if (c.vna.ports === 2) {
+    notes.push('<span class="mut">These ratings come from S11 measured '
+      + 'through this part’s own loss, which attenuates any reflection '
+      + 'twice and flatters the match. For a two-port part, read the '
+      + 'insertion loss above; the VSWR rating describes an antenna, not a '
+      + 'cable.</span>');
+  }
+
+  // Provenance, never defaulted to something reassuring.
+  const src = c.vna.source || { kind: "unknown" };
+  const cal = c.vna.calibration || { known: false };
+  const origin = src.kind === "instrument"
+    ? `swept on ${esc(src.instrument || "a VNA")}`
+    : src.kind === "file" ? `imported from ${esc(src.filename || "a file")}`
+      : "origin not recorded";
+  const calText = cal.known
+    ? "calibration verified for this span"
+    : "calibration span unverified";
+  notes.push(`<span class="mut">${origin} — <b>${calText}</b>. `
+    + `${esc(cal.note || "")}</span>`);
+
+  $("comp-bands").innerHTML = `<p>${chips}</p>`
+    + notes.map((n) => `<p>${n}</p>`).join("");
 }
 
 function drawVnaPlot(c, pinned) {

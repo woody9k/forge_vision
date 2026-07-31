@@ -197,12 +197,45 @@ class ComponentStore:
         return out
 
     def import_vna(self, comp_id: str, text: str, filename: str = "") -> dict:
-        """Attach a touchstone measurement and derived analysis (FR-RFC-003/004)."""
+        """Attach a touchstone measurement and derived analysis (FR-RFC-003/004).
+
+        A file carries no calibration provenance — nothing in the touchstone
+        format records whether the sweep was calibrated, or over what span —
+        so the stored record says so rather than leaving it to be assumed.
+        """
+        return self.attach_measurement(
+            comp_id, parse_touchstone(text),
+            source={"kind": "file", "filename": filename},
+            calibration={"known": False,
+                         "note": "Imported from a file. Touchstone carries no "
+                                 "calibration record, so whether this sweep was "
+                                 "calibrated, and over what span, is unknown."})
+
+    def attach_measurement(self, comp_id: str, data: dict,
+                           source: dict | None = None,
+                           calibration: dict | None = None) -> dict:
+        """Store a parsed sweep plus its derived analysis (FR-RFC-003/004).
+
+        `data` is the structure `parse_touchstone()` returns, which is also
+        what `nanovna.NanoVNA.scan()` produces — a file import and a live
+        instrument sweep travel the same path from here on.
+
+        `calibration` records how far the numbers can be trusted. It is stored
+        verbatim and never defaulted to something reassuring: an absent record
+        becomes an explicit "unknown", because a measurement whose calibration
+        cannot be established is a different claim from a calibrated one
+        (rules 1 and 3).
+        """
         comp = self.load(comp_id)
-        data = parse_touchstone(text)
         analysis = analyze_s11(data["freqs_hz"], data["s11"])
+        filename = (source or {}).get("filename", "")
         comp["vna"] = {
             "filename": filename,
+            "source": source or {"kind": "unknown"},
+            "calibration": calibration or {
+                "known": False,
+                "note": "No calibration provenance was recorded with this "
+                        "measurement."},
             "imported_at": time.time(),
             "ports": data["ports"],
             "format": data["format"],

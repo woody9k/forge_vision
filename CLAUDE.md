@@ -74,6 +74,7 @@ dsp/            versioned pipeline, FMCW stages, peaks, stepped-frequency synthe
 imaging/        B-scan assembly, diffraction-stack migration
 rfcomponents/   component inventory, touchstone/VNA import
   chains.py     the working signal path plus named, reusable configurations
+  nanovna.py    NanoVNA serial driver: discovery, sweep, calibration residual
 safety.py       interlock, TX authorization fingerprints, audit log
 sites.py        site model, cross-scan fusion into world coordinates
 sage/           grounded facts, analysis, query parser, optional LLM narration
@@ -133,6 +134,50 @@ frequency, gain — stay on the working pages beside the plots they affect.
   silently diverge — observed one entry reporting 923 MHz while the other and
   the hardware were at 1090 MHz. A capture taken through the stale entry would
   record an RF config the radio never had. Register one URI, not two.
+### NanoVNA-F V2 (SYSJOINT) — bench VNA, added 2026-07-31
+
+Used to characterise antennas and cables from the Hardware page. Enumerates as
+USB `0483:5740` (STM32 CDC-ACM), product string `NanoVnaPro Virtual ComPort`,
+**12 Mbit/s full speed** — USB 3 or Type-C buys nothing, and a C-to-A cable
+avoids the missing-CC-resistor failure mode that stops some USB-C devices
+enumerating on a C-to-C cable. Model reports `NanoVNA-F_V2`, firmware 0.6.2,
+50 kHz – 3 GHz.
+
+- `/dev/ttyACM0` is `root:dialout 0660` and the deployment user is **not** in
+  dialout. `/etc/udev/rules.d/60-nanovna.rules` grants **plugdev** — which the
+  running uvicorn already carries as a supplementary group, so the rule takes
+  effect with no restart and no re-login — plus a stable `/dev/nanovna`.
+- `0483:5740` is ST's generic virtual COM port, shared with many unrelated
+  boards, so `discover()` **probes** with `info` rather than trusting the
+  descriptor.
+- The acquisition primitive is `scan {start} {stop} {points} 7`: five columns
+  (freq, S11 re/im, S21 re/im) in one command, measured 5.7 ms/point. **It
+  overwrites the instrument's stored start, stop and point count**, so the
+  driver saves and restores them — automation must not silently reconfigure a
+  front panel someone is also using by hand.
+- **301 points is the ceiling.** Asking for 401 does not clamp; the firmware
+  returns a single junk row, which would otherwise arrive as one point wearing
+  the label of four hundred. Refused in the driver.
+- **The firmware will not tell you what span a calibration was taken over.**
+  Bare `cal` reports only which standards are captured
+  (`load open short thru cal'ed`), and it silently interpolates a calibration
+  onto whatever span is swept. A sweep therefore carries no proof its
+  calibration applies. `analyze_thru_residual()` measures the residual against
+  a known thru instead: a calibration covering the span holds S21 at 0 dB
+  across all of it, and an interpolated one leaves its error concentrated at
+  the **band edges**. That asymmetry is the tell.
+- The instrument always returns an S21 column even with port 2 open, so a
+  one-port antenna sweep must declare `ports=1` or it stores a column of noise
+  labelled as insertion loss.
+- The VNA is **not** gated by `SafetyController`. Its source is fixed-level
+  (~ −9 dBm), is not operator-controllable, and free-runs whenever the
+  instrument is powered, so the TX fingerprint has nothing to bind to. Every
+  sweep is written to the safety audit log and its span checked against the
+  active frequency profile; an out-of-profile sweep warns and is recorded but
+  is not blocked, because a broadband sweep into a load radiates essentially
+  nothing. Decided 2026-07-31 — do not quietly upgrade this to a block or
+  downgrade it to silence.
+
 - Reflashing re-enumerates the board, which invalidates any open USB handle.
   The adapter keeps reporting `connected: true`; the tell is that `health`
   loses its `temperature_c` field. Disconnect and reconnect to recover.
@@ -144,6 +189,12 @@ the transmit path exists only in simulation. Treat every transmit-derived
 figure — including the stepped-frequency resolution results — as a simulation
 result. README has the full maturity table; do not let code existing be read
 as a physical claim.
+
+The one exception is the **NanoVNA**, whose own source is an instrument
+stimulus rather than the platform's transmit path. RF component measurement
+(`rfcomponents/nanovna.py`, `/api/vna/*`) is validated end to end on real
+hardware: driver, sweep, analysis, and storage were exercised against a
+NanoVNA-F V2 measuring real cables on 2026-07-31.
 
 The bench right now: a Pluto+ on Ethernet at `pluto.boblab.net`
 (192.168.99.222), reachable and healthy, TX off, disarmed. The deployment is
@@ -160,6 +211,16 @@ front-to-back ratio. Receive-only throughout; nothing keys the transmitter.
 Watch for clipping at 40 dB RX gain and drop to 30 dB if it appears, because a
 clipped sweep is not a measurement.
 
+A cable measured on the NanoVNA on 2026-07-31 showed **5.7 dB insertion loss
+at 2.45 GHz** (3.0 dB at 700 MHz, 6.9 dB at 3 GHz) — a loss curve consistent
+with thin coax. Whether that is the 10 ft feedline is unconfirmed; check
+before relying on it. If it is: front-to-back ratio is unaffected, because a
+fixed loss cancels in a difference of two sweeps. But any *absolute*
+comparison against the −104.7 dBFS bare-port baseline needs 5.7 dB added back
+— that baseline was recorded with no cable — and the same 5.7 dB raises the
+effective noise figure, so confirm the AP still clears the floor before
+committing to a rotation run.
+
 **The engineering queue**, in the order I would take it. An external review
 produced a longer list; these are the parts that survived verification:
 
@@ -173,6 +234,11 @@ produced a longer list; these are the parts that survived verification:
    is lost on restart. It also needs to record what it was taken with
    (waveform, gains, chain, frequency span) and refuse to apply against an
    incompatible configuration, the same way chain configurations already do.
+   The VNA path now solves the same problem and is the model to copy: a stored
+   measurement carries a `calibration` record that stays `known: false` until
+   evidence says otherwise, and `analyze_thru_residual()` produces that
+   evidence by measurement rather than assertion. Build one abstraction for
+   both rather than a second parallel one.
 3. **Bistatic geometry.** `imaging/migration.py` uses
    `r = sqrt(z² + (x−x₀)²)` — a one-way slant range from a single point. With
    separate TX and RX antennas the path is TX→target plus target→RX. Only

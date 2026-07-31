@@ -428,13 +428,39 @@
             <input id="comp-notes" type="text" size="40" placeholder="notes…">
             <button id="comp-save-notes">Save notes</button>
           </div>
-          <div class="subhead">VNA measurement</div>
+          <div class="subhead">VNA measurement — import a file</div>
           <div class="toolbar">
             <input id="vna-file" type="file" accept=".s1p,.s2p,.S1P,.S2P">
             <button id="vna-upload">Import</button>
             <label><input type="checkbox" id="comp-pin"> pin for comparison</label>
             <button id="comp-delete">Delete component</button>
           </div>
+
+          <div class="subhead">VNA measurement — sweep the instrument</div>
+          <div class="toolbar">
+            <span class="mut" id="vna-instrument">instrument not detected</span>
+            <button id="vna-detect">Detect</button>
+            <span class="mut" id="vna-cal"></span>
+          </div>
+          <div class="toolbar">
+            <label>Start <input id="vna-start" type="number" size="7" step="0.1"
+                   value="700"> MHz</label>
+            <label>Stop <input id="vna-stop" type="number" size="7" step="0.1"
+                   value="3000"> MHz</label>
+            <label>Points <select id="vna-points">
+              <option>101</option><option>201</option><option>301</option>
+            </select></label>
+            <label title="What is physically connected. The instrument always
+returns an S21 column, so a reflection-only sweep would otherwise store a
+column of noise as insertion loss.">Connected <select id="vna-ports">
+              <option value="2">thru — both ports (cable, attenuator)</option>
+              <option value="1">reflection — port 1 only (antenna)</option>
+            </select></label>
+            <button id="vna-sweep" class="primary">Sweep into this component</button>
+            <button id="vna-calcheck" title="Connect a known thru first">Check
+              calibration</button>
+          </div>
+          <div id="vna-notice"></div>
           <div id="comp-bands"></div>
         </div>
       </div>
