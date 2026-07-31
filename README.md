@@ -252,6 +252,11 @@ things about the results are worth knowing before quoting them:
   measurement is therefore marked *calibration span unverified* until you run
   **Check calibration** against a known thru, which measures the residual and
   says whether it holds.
+- **Electrical delay takes two sweeps.** Phase unwrapping caps the measurable
+  delay at `1/(2·Δf)`, and past that a long cable reports a *short* delay with
+  a flawless linear fit — nothing in a single sweep gives it away. **Measure
+  delay** sweeps at two point counts, which alias differently, and writes the
+  figure only when they agree.
 - **Loss flatters a match.** For a two-port part, S11 is measured through the
   component's own loss, which attenuates any reflection twice. On this bench a
   5.8 dB cable read −24 dB mean while a low-loss thru read −16 dB on the same

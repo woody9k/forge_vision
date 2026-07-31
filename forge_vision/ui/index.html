@@ -422,6 +422,13 @@
             <button id="comp-save-char" class="primary">Save</button>
             <button id="comp-adopt-loss" title="Take loss from the imported S21 sweep"
                     style="display:none">Use measured S21</button>
+            <button id="comp-adopt-delay" title="Take electrical delay from the
+S21 phase slope of the stored sweep. A single sweep cannot rule out phase
+aliasing — use Measure delay below for a cross-checked figure."
+                    style="display:none">Use measured delay</button>
+          </div>
+          <div class="toolbar" id="comp-delay-hint" style="display:none">
+            <span class="mut"></span>
           </div>
           <div class="subhead">Notes</div>
           <div class="toolbar">
@@ -459,6 +466,17 @@ column of noise as insertion loss.">Connected <select id="vna-ports">
             <button id="vna-sweep" class="primary">Sweep into this component</button>
             <button id="vna-calcheck" title="Connect a known thru first">Check
               calibration</button>
+          </div>
+          <div class="toolbar">
+            <label title="Delay of whatever was connected during the thru
+calibration, which is subtracted from every measurement taken against it. An
+8 inch jumper is roughly 1 ns. This is your declaration, not a measurement.">
+              Cal reference plane
+              <input id="vna-refplane" type="number" size="4" step="0.01"
+                     value="0"> ns</label>
+            <button id="vna-delay" title="Sweeps twice at different point counts
+so phase aliasing is caught rather than assumed away">Measure delay into this
+              component</button>
           </div>
           <div id="vna-notice"></div>
           <div id="comp-bands"></div>
