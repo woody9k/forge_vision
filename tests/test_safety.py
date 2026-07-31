@@ -46,10 +46,41 @@ def test_tx_gain_limit_enforced(armed_runtime):
 def test_frequency_profile_enforced(armed_runtime):
     """FR-SAF-007: frequencies outside the active profile are refused."""
     armed_runtime.safety.limits.active_profile = "ism_conservative"
-    wf = CATALOG["fmcw_bench_56M"]
+    wf = CATALOG["fmcw_narrow_20M"]                          # 905-925 MHz at 915
     with pytest.raises(SafetyViolation, match="profile"):
         armed_runtime.safety.validate_tx(1.3e9, wf, -30.0)   # not an ISM band
-    armed_runtime.safety.validate_tx(915e6, wf, -30.0)       # ISM: fine
+    armed_runtime.safety.validate_tx(915e6, wf, -30.0)       # fits 902-928: fine
+
+
+def test_a_sweep_wider_than_the_allocation_is_refused(armed_runtime):
+    """The whole occupied span must be legal, not just its midpoint.
+
+    This test previously asserted the opposite. fmcw_bench_56M centred at
+    915 MHz occupies 887-943 MHz while the ISM allocation is 902-928, and a
+    centre-only check passed it — so the platform would transmit outside the
+    profile for most of every chirp while reporting itself compliant.
+    """
+    armed_runtime.safety.limits.active_profile = "ism_conservative"
+    wide = CATALOG["fmcw_bench_56M"]
+    with pytest.raises(SafetyViolation, match="occupies"):
+        armed_runtime.safety.validate_tx(915e6, wide, -30.0)
+    # the same sweep is fine where the allocation is wide enough for it
+    armed_runtime.safety.limits.active_profile = "bench_cabled"
+    armed_runtime.safety.validate_tx(915e6, wide, -30.0)
+
+
+def test_a_receive_only_waveform_has_no_span_but_is_still_band_checked(armed_runtime):
+    """It has no sweep to constrain, but it is not exempt from the band.
+
+    Enabling TX keys the power amplifier, and a real transmitter leaks its LO
+    at the centre frequency even with zero baseband — so the centre is still
+    checked while the span check is skipped.
+    """
+    armed_runtime.safety.limits.active_profile = "ism_conservative"
+    assert CATALOG["rx_only"].occupied_range(1.3e9) is None
+    with pytest.raises(SafetyViolation, match="profile"):
+        armed_runtime.safety.validate_tx(1.3e9, CATALOG["rx_only"], -30.0)
+    armed_runtime.safety.validate_tx(915e6, CATALOG["rx_only"], -30.0)
 
 
 def test_emergency_stop_kills_all_tx(armed_runtime):

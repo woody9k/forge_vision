@@ -33,75 +33,6 @@ PROBES = [
     ("GET", "/api/llm", None, "Configured narration endpoints."),
 ]
 
-# Request shapes the server accepts but cannot advertise, because the handlers
-# take an untyped dict. Documented here so an agent knows what to send.
-BODY_SCHEMAS = {
-    "/api/range/run": {
-        "device_id": "str, default 'sim-pluto-0'",
-        "waveform": "str, must be in the device's compatible_waveforms",
-        "chirps": "int, coherent averages (default 8)",
-        "medium": "str preset ('air','soil_dry','soil_moist',...) or object with epsilon_r",
-        "use_background": "bool, subtract the stored background (default true)",
-        "name": "str", "tags": "list[str]", "operator": "str",
-        "pipeline_overrides": "object, per-stage DSP parameter overrides",
-    },
-    "/api/stepped/run": {
-        "device_id": "str", "start_hz": "float", "stop_hz": "float",
-        "waveform": "str, the FMCW chunk waveform (default fmcw_pluto_40M)",
-        "overlap": "float in [0,1), chunk overlap used to solve PLL phase steps",
-        "chirps": "int", "medium": "str or object",
-        "correction": "'overlap' (default) or 'none'",
-        "max_range_m": "float",
-    },
-    "/api/scan/start": {
-        "device_id": "str",
-        "plan": "object: start_m, end_m, step_m, waveform, chirps, medium, "
-                "antenna_height_m, position_uncertainty_m, max_range_m, notes",
-    },
-    "/api/scan/{scan_id}/point": {
-        "x_m": "float, or omit entirely to take the position from the active source",
-        "operator_override": "bool, accept a point that failed the quality gate",
-    },
-    "/api/survey": {
-        "device_id": "str", "start_hz": "float", "stop_hz": "float",
-        "step_hz": "float", "sample_rate_hz": "float", "rx_gain_db": "float",
-        "samples": "int", "name": "str",
-    },
-    "/api/sites/{site_id}/register": {
-        "experiment_id": "str, a finalized scan",
-        "origin_x_m": "float", "origin_y_m": "float",
-        "heading_deg": "float, CCW from +x", "label": "str",
-        "position_uncertainty_m": "float",
-    },
-    "/api/sage/ask": {
-        "question": "str", "site_id": "str, optional context",
-        "experiment_id": "str, optional context",
-        "narrate": "bool, default false — narration is fetched separately",
-    },
-    "/api/jobs": {"kind": "'survey' | 'site_scene' | 'replay'",
-                  "params": "object, the arguments for that job kind"},
-    "/api/position/source": {
-        "kind": "'manual' | 'serial' | 'replay'",
-        "port": "str (serial)", "baud": "int (serial)",
-        "wheel_circumference_m": "float (serial)",
-        "counts_per_revolution": "int (serial)",
-        "samples": "list[object] (replay)",
-    },
-    "/api/devices/{device_id}/configure": {
-        "center_frequency_hz": "float", "sample_rate_hz": "float",
-        "rx_bandwidth_hz": "float", "rx_gain_db": "float", "tx_gain_db": "float",
-    },
-    "/api/safety/arm": {"operator": "str", "acknowledgement": "str"},
-    "/api/safety/path_attenuation": {"attenuation_db": "float"},
-    "/api/rf_chain": {"tx_ids": "list[str]", "rx_ids": "list[str]",
-                      "antenna_tx": "str", "antenna_rx": "str"},
-    "/api/components": {"kind": "antenna|cable|adapter|attenuator|filter|...",
-                        "name": "str", "connector": "str", "claimed_band": "str",
-                        "nominal_loss_db": "float", "nominal_delay_ns": "float"},
-    "/api/llm": {"name": "str", "base_url": "str ending in /v1", "model": "str",
-                 "api_key": "str", "max_tokens": "int", "enabled": "bool"},
-}
-
 # Endpoints that transmit or change safety state. Called out so an automated
 # consumer treats them as operator actions rather than routine calls.
 TRANSMITS = {
@@ -126,6 +57,64 @@ def call(base: str, method: str, path: str, body=None, timeout: float = 30.0):
         return {"_http_error": e.code, "detail": e.read().decode()[:200]}
     except Exception as e:  # noqa: BLE001
         return {"_unreachable": str(e)}
+
+
+def field_type(prop: dict) -> str:
+    """A short human description of a JSON-Schema property."""
+    if "anyOf" in prop:
+        parts = [field_type(x) for x in prop["anyOf"]]
+        return " or ".join(dict.fromkeys(p for p in parts if p != "null"))
+    t = prop.get("type", "")
+    if t == "array":
+        return f"list of {field_type(prop.get('items', {}))}"
+    if t == "null":
+        return "null"
+    bits = [t or "any"]
+    if "pattern" in prop:
+        bits.append(f"matching `{prop['pattern']}`")
+    rng = []
+    for key, sym in (("minimum", ">="), ("exclusiveMinimum", ">"),
+                     ("maximum", "<="), ("exclusiveMaximum", "<")):
+        if key in prop:
+            rng.append(f"{sym} {prop[key]}")
+    if "minLength" in prop and prop["minLength"]:
+        rng.append(f"at least {prop['minLength']} character(s)")
+    if rng:
+        bits.append("(" + ", ".join(rng) + ")")
+    return " ".join(bits)
+
+
+def request_body_reference(spec: dict) -> list:
+    """A field table per endpoint, derived from the OpenAPI components."""
+    schemas = spec.get("components", {}).get("schemas", {})
+    out = []
+    for path, ops in sorted(spec.get("paths", {}).items()):
+        for method, op in sorted(ops.items()):
+            ref = ((op.get("requestBody") or {}).get("content", {})
+                   .get("application/json", {}).get("schema", {}).get("$ref"))
+            if not ref:
+                continue
+            model = schemas.get(ref.rsplit("/", 1)[-1], {})
+            props = model.get("properties", {})
+            if not props:
+                continue
+            required = set(model.get("required", []))
+            out += [f"### `{method.upper()} {path}`", ""]
+            if model.get("description"):
+                out += [model["description"].strip(), ""]
+            out += ["| field | type | required | default | notes |",
+                    "|---|---|---|---|---|"]
+            for name, prop in props.items():
+                # "no default declared" and "defaults to empty string" are
+                # different claims; rendering both as "" would invent one.
+                default = (f"`{json.dumps(prop['default'])}`"
+                           if "default" in prop else "—")
+                out.append(
+                    f"| `{name}` | {field_type(prop)} | "
+                    f"{'yes' if name in required else 'no'} | {default} | "
+                    f"{prop.get('description', '')} |")
+            out.append("")
+    return out
 
 
 def truncate(obj, depth=0):
@@ -191,13 +180,11 @@ def main() -> int:
                   "```json", json.dumps(truncate(result), indent=1)[:1400], "```", ""]
 
     lines += ["---", "", "## Request bodies", "",
-              "FastAPI cannot advertise these because the handlers accept an",
-              "untyped object, so they are documented here.", ""]
-    for path, schema in sorted(BODY_SCHEMAS.items()):
-        lines += [f"### `{path}`", "", "| field | meaning |", "|---|---|"]
-        for k, v in schema.items():
-            lines.append(f"| `{k}` | {v} |")
-        lines.append("")
+              "Generated from the declared request models, so this cannot drift",
+              "from what the server actually accepts. Every body rejects unknown",
+              "fields: a misspelled key is a 422, not a silent default.", ""]
+    body_ref = request_body_reference(spec)
+    lines += body_ref
 
     lines += ["---", "", "## Full endpoint index", "",
               "| method | path | summary |", "|---|---|---|"]
@@ -217,7 +204,7 @@ def main() -> int:
         f.write("\n".join(lines) + "\n")
     total = sum(len(v) for v in spec.get("paths", {}).values())
     print(f"wrote {args.out}: {total} endpoints, {len(PROBES)} live examples, "
-          f"{len(BODY_SCHEMAS)} documented request bodies")
+          f"{sum(1 for l in body_ref if l.startswith(chr(35) * 3))} documented request bodies")
     return 0
 
 

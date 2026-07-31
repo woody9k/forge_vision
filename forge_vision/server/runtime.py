@@ -29,6 +29,8 @@ from ..positioning import (ManualSource, PositionSample, ReplaySource,
 from ..imaging.bscan import BScanBuilder
 from ..imaging.migration import focused_targets, migrate_bscan
 from ..reports import site_report
+from ..devices.book import RadioBook
+from ..rfcomponents.chains import ChainStore
 from ..rfcomponents.store import ComponentStore
 from ..safety import SafetyController
 from ..sage.narrate import EndpointStore
@@ -83,6 +85,8 @@ class Runtime:
         os.makedirs(self.data_dir, exist_ok=True)
         self.store = ExperimentStore(os.path.join(self.data_dir, "experiments"))
         self.components = ComponentStore(os.path.join(self.data_dir, "components"))
+        self.chains = ChainStore(os.path.join(self.data_dir, "chains"))
+        self.radios = RadioBook(os.path.join(self.data_dir, "radios.json"))
         self.sites = SiteStore(os.path.join(self.data_dir, "sites"))
         self.llm = EndpointStore(os.path.join(self.data_dir, "llm_endpoints.json"))
         self.llm.load()
@@ -93,8 +97,9 @@ class Runtime:
         self.calibration: dict[str, dict] = {}       # device_id -> assets
         self.scans: dict[str, dict] = {}             # scan experiment_id -> session
         self.jobs = JobManager()                     # FR-API-003
-        self.rf_chain: dict = {"tx_ids": [], "rx_ids": [],
-                               "antenna_tx": "", "antenna_rx": ""}
+        self._tx_waveforms: dict[str, object] = {}   # device -> live waveform
+        # set by emergency stop and shutdown; long loops check it
+        self.stop_acquisition = threading.Event()
         self.position_source = ManualSource()        # FR-POS-001 default
         self._register(SimulatedPluto("sim-pluto-0"))
         self._discover_hardware()
@@ -112,39 +117,182 @@ class Runtime:
     def _discover_hardware(self) -> None:
         try:
             from ..devices.pluto import PlutoDevice
-            for dev in PlutoDevice.discover():
+            for dev in PlutoDevice.discover(book=tuple(self.radios.uris())):
                 self._register(dev)
         except Exception:  # noqa: BLE001 - hardware discovery is best-effort
             pass
 
-    def rescan_hardware(self, uri: str = "") -> dict:
-        """Probe for radios without restarting (default URIs, or one explicit
-        URI such as ip:192.168.1.87 for a Pluto+ on its Ethernet port)."""
-        from ..devices.pluto import DEFAULT_URIS, PlutoDevice, driver_status
+    def rescan_hardware(self, uri: str = "", prefer: str = "auto",
+                        measure: bool = True) -> dict:
+        """Probe for radios without restarting.
+
+        With no explicit URI this surveys every candidate transport, groups the
+        ones that are the same physical board, and registers the fastest way in
+        — one entry per radio. `prefer` overrides the choice ("usb",
+        "network", or an exact URI) for when the fastest link is not the one
+        you want, such as debugging the network the radio is on.
+        """
+        from ..devices.pluto import PlutoDevice, driver_status
         status = driver_status()
         result = {"driver": status, "added": [], "already_present": [],
-                  "errors": []}
+                  "errors": [], "survey": []}
         if not status["available"]:
             return result
-        uris = [uri] if uri else list(DEFAULT_URIS)
-        for u in uris:
-            device_id = f"pluto-{u}"
+
+        if uri:
+            # An explicit URI is an instruction, not a suggestion: open exactly
+            # that transport without surveying or second-guessing it.
+            device_id = f"pluto-{uri}"
             if device_id in self.devices:
                 result["already_present"].append(device_id)
-                if not uri:
-                    break      # the default transports are one radio
-                continue
+                return result
             try:
-                dev = PlutoDevice(u)
+                dev = PlutoDevice(uri)
                 dev.connect()
                 self._register(dev)
-                self.safety.audit("device_discovered", device=device_id, uri=u)
+                self.safety.audit("device_discovered", device=device_id, uri=uri)
                 result["added"].append(self._describe_device(dev))
-                if not uri:
-                    break      # stop at the first default transport that opens
             except Exception as exc:  # noqa: BLE001 - report, don't crash
-                result["errors"].append({"uri": u, "error": str(exc)})
+                result["errors"].append({"uri": uri, "error": str(exc)})
+            return result
+
+        try:
+            found = PlutoDevice.discover(prefer=prefer, measure=measure,
+                                         book=tuple(self.radios.uris()))
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append({"uri": "(survey)", "error": str(exc)})
+            return result
+        for dev in found:
+            info = getattr(dev, "discovery", {}) or {}
+            result["survey"].append(info)
+            device_id = dev.device_id
+            # Already registered under *any* transport of the same board: the
+            # whole point of the survey is one entry per radio.
+            known = {d.uri for d in self.devices.values() if hasattr(d, "uri")}
+            alt_uris = {t.get("uri") for t in info.get("alternatives", [])}
+            if device_id in self.devices or (known & alt_uris):
+                result["already_present"].append(device_id)
+                try:
+                    dev.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+            self._register(dev)
+            self.safety.audit("device_discovered", device=device_id,
+                              uri=dev.uri, reason=info.get("reason", ""))
+            result["added"].append(self._describe_device(dev))
         return result
+
+    def survey_transports(self, measure: bool = True) -> dict:
+        """Report every way into every radio, without registering anything.
+
+        A transport this deployment already holds is reported as in use rather
+        than as unreachable. The USB backend is exclusive, so probing it while
+        we own it fails with "Device or resource busy" — calling that
+        "unreachable" would blame the hardware for our own handle.
+        """
+        from ..devices import discovery
+        from ..devices.pluto import driver_status
+        status = driver_status()
+        if not status["available"]:
+            return {"driver": status, "boards": [], "probes": []}
+
+        mine = {getattr(d, "uri", None): did
+                for did, d in self.devices.items() if getattr(d, "uri", None)}
+        probes = []
+        for uri in discovery.candidate_uris(book=tuple(self.radios.uris())):
+            if uri in mine:
+                held = discovery.TransportProbe(
+                    uri=uri, reachable=True,
+                    error="", identity={})
+                held.in_use_by = mine[uri]
+                probes.append(held)
+                continue
+            probes.append(discovery.probe(uri, measure=measure))
+        out = {"driver": status,
+               "boards": discovery.group_boards(probes),
+               "probes": []}
+        for p in probes:
+            d = p.to_dict()
+            if getattr(p, "in_use_by", ""):
+                d["in_use_by"] = p.in_use_by
+                d["note"] = ("already open in this deployment; not re-probed "
+                             "because the USB backend is exclusive")
+            out["probes"].append(d)
+        return out
+
+    def forget_device(self, device_id: str) -> dict:
+        """Drop a radio from this session.
+
+        Discovery will find it again on the next scan — this removes the entry,
+        not the hardware. Saved addresses are managed separately so that
+        forgetting a device does not quietly unlearn where it lives.
+        """
+        dev = self.device(device_id)
+        if getattr(dev, "kind", "") == "simulated_pluto_plus":
+            raise ValueError("the simulated radio is always available and "
+                             "cannot be removed")
+        try:
+            dev.disconnect()
+        except Exception:  # noqa: BLE001 - forgetting must not be blockable
+            pass
+        self.devices.pop(device_id, None)
+        self.device_locks.pop(device_id, None)
+        self.calibration.pop(device_id, None)
+        self.safety.audit("device_forgotten", device=device_id)
+        return {"forgotten": device_id}
+
+    def switch_transport(self, device_id: str, uri: str) -> dict:
+        """Reach the same radio a different way.
+
+        Calibration and any in-flight scan belong to the device entry, so this
+        replaces the entry rather than mutating it, and refuses while a scan is
+        running rather than silently reattaching underneath one.
+        """
+        from ..devices.pluto import PlutoDevice
+        dev = self.device(device_id)
+        if getattr(dev, "kind", "") == "simulated_pluto_plus":
+            raise ValueError("the simulated radio has no transports")
+        live = [sid for sid, sc in self.scans.items()
+                if sc.get("device_id") == device_id and not sc.get("finalized")]
+        if live:
+            raise ValueError(f"{device_id} has an unfinished scan ({live[0]}); "
+                             "finalize or abandon it before switching transport")
+        target = PlutoDevice(uri)
+        target.connect()                    # fail before tearing anything down
+        old_discovery = getattr(dev, "discovery", {}) or {}
+        self.forget_device(device_id)
+        target.discovery = {**old_discovery, "uri": uri,
+                            "reason": f"switched by operator to {uri}"}
+        self._register(target)
+        self.safety.audit("device_transport_switched",
+                          device=target.device_id, uri=uri, was=device_id)
+        return self._describe_device(target)
+
+    # -- saved radio addresses (FR-DEV-002) ---------------------------------
+    def list_radio_addresses(self) -> list[dict]:
+        import os as _os
+        pinned = _os.environ.get("FORGE_VISION_PLUTO_URIS", "").strip()
+        out = self.radios.list()
+        for e in out:
+            e["in_use"] = any(getattr(d, "uri", "") == e["uri"]
+                              for d in self.devices.values())
+        if pinned:
+            for e in out:
+                e["overridden_by_env"] = True
+        return out
+
+    def add_radio_address(self, address: str, label: str = "") -> dict:
+        entry = self.radios.add(address, label=label)
+        self.safety.audit("radio_address_added", uri=entry["uri"],
+                          label=entry["label"])
+        return entry
+
+    def update_radio_address(self, radio_id: str, fields: dict) -> dict:
+        return self.radios.update(radio_id, fields)
+
+    def remove_radio_address(self, radio_id: str) -> dict:
+        return self.radios.remove(radio_id)
 
     def device(self, device_id: str):
         if device_id not in self.devices:
@@ -168,12 +316,107 @@ class Runtime:
         dev = self.device(device_id)
         merged = {**dev.config.to_dict(), **cfg}
         dev.configure(DeviceConfig(**merged))
+        # A live transmitter must not inherit permission granted for a
+        # different configuration. Previously this path bypassed the interlock
+        # entirely: tx gain could go from -30 dB to 0 dB, or the radio could be
+        # walked outside the active frequency profile, without revalidation.
+        self.enforce_tx_authorization(f"device {device_id} reconfigured")
         return self._describe_device(dev)
 
     # -- safety ------------------------------------------------------------
     def emergency_stop(self) -> dict:
+        """Stop transmitting and stop acquiring (FR-SAF-003).
+
+        Disabling TX is the urgent part, so it happens first and unconditionally.
+        But a stop that leaves survey jobs sweeping and live streams pulling
+        buffers has not stopped the instrument — it has only made it quieter,
+        and the next thing an operator does may re-key a radio that is still
+        mid-acquisition.
+        """
         results = self.safety.emergency_stop(self.devices.values())
-        return {"stopped": True, "results": results}
+        self._tx_waveforms.clear()
+        for device_id in list(self.devices):
+            self.safety.revoke_authorization(device_id)
+        self.stop_acquisition.set()
+        cancelled = self._cancel_active_jobs("emergency stop")
+        interrupted = self._mark_scans_interrupted("emergency stop")
+        self.safety.audit("emergency_stop", jobs_cancelled=cancelled,
+                          scans_interrupted=interrupted)
+        return {"stopped": True, "results": results,
+                "jobs_cancelled": cancelled, "scans_interrupted": interrupted}
+
+    def resume_acquisition(self) -> dict:
+        """Clear the emergency-stop latch.
+
+        An emergency stop latches: acquisition stays refused until an operator
+        deliberately says the instrument is fit to use again. Auto-clearing on
+        the next request would make the stop a momentary interruption rather
+        than a state someone has to look at and dismiss.
+        """
+        was_set = self.stop_acquisition.is_set()
+        self.stop_acquisition.clear()
+        if was_set:
+            self.safety.audit("acquisition_resumed")
+        return {"acquisition_stopped": False, "was_stopped": was_set}
+
+    def _cancel_active_jobs(self, reason: str) -> list[str]:
+        cancelled = []
+        for j in self.jobs.list(active_only=True):
+            try:
+                self.jobs.cancel(j["job_id"])
+                cancelled.append(j["job_id"])
+            except Exception:  # noqa: BLE001 - stopping must not be blockable
+                pass
+        return cancelled
+
+    def _mark_scans_interrupted(self, reason: str) -> list[str]:
+        """Record unfinished scans as interrupted rather than leaving them open.
+
+        A scan abandoned mid-line is partial data, not absent data. Saying so
+        keeps it distinguishable from a scan that simply has not started
+        (FR-ACQ-003).
+        """
+        marked = []
+        for exp_id, session in list(self.scans.items()):
+            if session.get("finalized"):
+                continue
+            try:
+                self.store.annotate(exp_id, {
+                    "type": "interrupted", "reason": reason,
+                    "at": time.time(),
+                    "text": f"acquisition interrupted: {reason}"})
+                session["interrupted"] = reason
+                marked.append(exp_id)
+            except Exception:  # noqa: BLE001
+                pass
+        return marked
+
+    def shutdown(self, reason: str = "application shutdown") -> dict:
+        """Bring the instrument to a safe, recorded stop.
+
+        Called from the application lifespan handler so that stopping the
+        service is not merely the process disappearing while a radio is keyed.
+        Software cannot guarantee this after a host failure — a hardware TX
+        watchdog is the real answer for field work — but it covers the ordinary
+        case of the service being stopped or restarted.
+        """
+        out = self.emergency_stop()
+        self.safety.disarm()
+        for device_id, dev in list(self.devices.items()):
+            try:
+                dev.disconnect()
+            except Exception:  # noqa: BLE001 - shutdown must not raise
+                pass
+        self.safety.audit("runtime_shutdown", reason=reason)
+        out["shutdown"] = reason
+        return out
+
+    def arm(self, operator: str, acknowledgement: str) -> dict:
+        """Arm the interlock. Arming is a deliberate act, so it also lifts an
+        emergency-stop latch rather than leaving the operator to find it."""
+        self.safety.arm(operator, acknowledgement)
+        self.stop_acquisition.clear()
+        return self.safety.status()
 
     def _enable_tx(self, dev, waveform, tx_gain_db: float) -> None:
         # only a physical receiver can be damaged, so the RX-protection
@@ -184,13 +427,72 @@ class Runtime:
             enforce_rx_protection=not dev.kind.startswith("simulated"))
         dev.load_waveform(waveform)
         dev.enable_tx()
+        # Remember the exact configuration this permission was granted against,
+        # and which waveform is loaded, so a later change can be detected.
+        self._tx_waveforms[dev.device_id] = waveform
+        self.safety.authorize_tx(dev.device_id, self._tx_fingerprint(dev, waveform,
+                                                                    tx_gain_db))
         self.safety.notify_tx_started(
             dev.device_id, waveform=waveform.name,
             frequency_hz=dev.config.center_frequency_hz, tx_gain_db=tx_gain_db)
 
     def _disable_tx(self, dev, reason: str = "normal") -> None:
         dev.force_tx_off()
+        self._tx_waveforms.pop(dev.device_id, None)
         self.safety.notify_tx_stopped(dev.device_id, reason=reason)
+
+    def _tx_fingerprint(self, dev, waveform, tx_gain_db: float) -> str:
+        return self.safety.tx_fingerprint(
+            dev.config.center_frequency_hz, waveform, tx_gain_db,
+            rx_gain_db=dev.config.rx_gain_db,
+            rf_bandwidth_hz=float(dev.config.rx_bandwidth_hz),
+            device_sample_rate_hz=float(dev.config.sample_rate_hz))
+
+    def set_frequency_profile(self, name: str) -> dict:
+        """Change the active profile, withdrawing any TX it no longer covers."""
+        if name not in self.safety.limits.frequency_profiles:
+            raise KeyError(f"unknown frequency profile: {name}")
+        self.safety.limits.active_profile = name
+        self.safety.audit("frequency_profile_changed", profile=name)
+        revoked = self.enforce_tx_authorization(f"frequency profile -> {name}")
+        status = self.safety.status()
+        if revoked:
+            status["tx_revoked"] = revoked
+        return status
+
+    def declare_path_attenuation(self, db: float) -> dict:
+        """Record TX->RX isolation, withdrawing TX approved under the old value."""
+        out = self.safety.declare_path_attenuation(db)
+        revoked = self.enforce_tx_authorization(f"path attenuation -> {db} dB")
+        if revoked:
+            out["tx_revoked"] = revoked
+        return out
+
+    def enforce_tx_authorization(self, reason: str) -> list[str]:
+        """Force TX off wherever the approved configuration no longer holds.
+
+        Transmit is authorized against a configuration, not a device. Changing
+        the centre frequency, gain, bandwidth, sample rate, safety profile or
+        declared path after TX is live means the approval no longer describes
+        what the radio is doing — so the approval is withdrawn rather than
+        quietly inherited (FR-SAF-004).
+        """
+        revoked = []
+        for device_id, dev in list(self.devices.items()):
+            if not getattr(dev, "tx_enabled", False):
+                continue
+            waveform = self._tx_waveforms.get(device_id)
+            approved = self.safety.authorization_for(device_id)
+            current = (self._tx_fingerprint(dev, waveform, dev.config.tx_gain_db)
+                       if waveform is not None else "")
+            if approved and current == approved:
+                continue
+            self.safety.audit("tx_authorization_revoked", device=device_id,
+                              reason=reason, approved=approved, now=current)
+            self._disable_tx(dev, reason=f"authorization revoked: {reason}")
+            self.safety.revoke_authorization(device_id)
+            revoked.append(device_id)
+        return revoked
 
     def set_tx(self, device_id: str, enable: bool, waveform_name: str = "") -> dict:
         dev = self.device(device_id)
@@ -928,6 +1230,9 @@ class Runtime:
         dev = self.device(device_id)
         if not dev.connected:
             raise ValueError(f"{device_id} is not connected")
+        if self.stop_acquisition.is_set():
+            raise ValueError("acquisition is stopped after an emergency stop; "
+                             "resume before starting a new sweep")
         caps = dev.capabilities
         start_hz = max(float(start_hz), caps.min_frequency)
         stop_hz = min(float(stop_hz), caps.max_frequency)
@@ -990,9 +1295,30 @@ class Runtime:
                                     "rx_gain_db": rx_gain_db}}],
              "fingerprint": "band_survey-1.0"}, [])
         self.store.finalize(exp_id)
+        # A survey run through a saved configuration is a measurement OF that
+        # configuration — that is what makes it re-measurable later.
+        self._record_chain_measurement(exp_id, "survey", {
+            "start_hz": start_hz, "stop_hz": stop_hz,
+            "median_noise_floor_dbfs": product["median_noise_floor_dbfs"],
+            "busiest_hz": busiest["center_hz"],
+            "busiest_peak_above_floor_db": busiest["peak_above_floor_db"],
+        })
         self.safety.audit("band_survey", device=device_id, start_hz=start_hz,
                           stop_hz=stop_hz, steps=steps, experiment=exp_id)
         return {"experiment_id": exp_id, **product}
+
+    def _record_chain_measurement(self, exp_id: str, kind: str,
+                                  summary: dict) -> None:
+        """Attach a measurement to the active configuration, if one is active
+        and the patching still matches it. A reading taken through an edited
+        chain is not a measurement of the saved configuration (FR-RFC-007)."""
+        w = self.chains.working()
+        if not w["config_id"] or w["modified"]:
+            return
+        try:
+            self.chains.record_measurement(w["config_id"], exp_id, kind, summary)
+        except FileNotFoundError:
+            pass
 
     # -- simulator control ---------------------------------------------------
     def set_sim_scene(self, device_id: str, preset: str = "",
@@ -1110,24 +1436,110 @@ class Runtime:
         status["kind"] = src.name
         return status
 
+    @property
+    def rf_chain(self) -> dict:
+        """The working chain. Persisted, so it survives a restart."""
+        w = self.chains.working()
+        return {k: w[k] for k in ("tx_ids", "rx_ids", "antenna_tx", "antenna_rx")}
+
     def set_rf_chain(self, tx_ids=None, rx_ids=None, antenna_tx: str = "",
                      antenna_rx: str = "") -> dict:
         """Declare the cable/adapter chain currently patched up (FR-RFC-006)."""
-        self.rf_chain = {"tx_ids": list(tx_ids or []),
-                         "rx_ids": list(rx_ids or []),
-                         "antenna_tx": antenna_tx, "antenna_rx": antenna_rx}
+        self.chains.set_working(tx_ids, rx_ids, antenna_tx, antenna_rx)
         self.safety.audit("rf_chain_declared", **self.rf_chain)
         return self.current_chain()
 
     def current_chain(self) -> dict:
-        c = self.rf_chain
-        return self.components.describe_chain(
-            c["tx_ids"], c["rx_ids"], c["antenna_tx"], c["antenna_rx"])
+        """Resolve the working chain for the experiment record.
+
+        Carries the saved configuration it came from, and whether it still
+        matches it. A capture taken after the operator edited the patching
+        must not read as though it came from the pristine named configuration
+        (FR-RFC-007).
+        """
+        w = self.chains.working()
+        chain = self.components.describe_chain(
+            w["tx_ids"], w["rx_ids"], w["antenna_tx"], w["antenna_rx"])
+        chain["config_id"] = w["config_id"]
+        chain["config_name"] = w["config_name"]
+        if w["modified"]:
+            chain["config_modified"] = True
+            chain["note"] = (chain.get("note", "") + " " if chain.get("note") else "") + (
+                f"Patched chain differs from saved configuration "
+                f"{w['config_name']!r}; it is not that configuration.")
+        return chain
+
+    # -- saved chain configurations (FR-RFC-006) ------------------------------
+    def list_chain_configs(self) -> list[dict]:
+        return self.chains.list()
+
+    def save_chain_config(self, name: str, notes: str = "") -> dict:
+        cfg = self.chains.save_working_as(name, notes=notes)
+        self.safety.audit("chain_config_saved", config_id=cfg["config_id"],
+                          name=cfg["name"])
+        return cfg
+
+    def activate_chain_config(self, config_id: str) -> dict:
+        cfg = self.chains.activate(config_id)
+        self.safety.audit("chain_config_activated", config_id=config_id,
+                          name=cfg["name"])
+        return self.current_chain()
+
+    def detach_chain_config(self) -> dict:
+        """Stop claiming the working chain came from a saved configuration.
+
+        Without this, clearing the patching leaves a chain that still reports
+        itself as a modified version of whatever was last active — technically
+        true, but it reads as an unresolved problem rather than a fresh start.
+        """
+        w = self.chains.working()
+        self.chains.set_working(w["tx_ids"], w["rx_ids"], w["antenna_tx"],
+                                w["antenna_rx"], config_id="")
+        return self.current_chain()
+
+    def delete_chain_config(self, config_id: str) -> dict:
+        self.chains.delete(config_id)
+        return {"deleted": config_id}
+
+    def chain_config_measurements(self, config_id: str) -> dict:
+        """A configuration plus the measurements taken with it."""
+        cfg = self.chains.load(config_id)
+        out = []
+        for m in cfg.get("measurements", []):
+            try:
+                man = self.store.load(m["experiment_id"])
+            except FileNotFoundError:
+                # The capture was deleted; say so rather than dropping it.
+                out.append({**m, "missing": True})
+                continue
+            out.append({**m, "name": man["identity"].get("name", ""),
+                        "created_at": man["identity"].get("created_at")})
+        return {**cfg, "measurements": out}
 
     def _describe_device(self, dev) -> dict:
+        from ..devices import discovery
         d = dev.describe()
         # the UI must never offer a waveform this radio cannot transmit
         d["compatible_waveforms"] = dev.compatible_waveforms(CATALOG)
+        # How the radio is attached, in terms an operator reads rather than a
+        # libiio URI: the same board over Ethernet and over USB behaves very
+        # differently, and the dashboard should not make you infer which from
+        # the device id.
+        uri = getattr(dev, "uri", "")
+        info = getattr(dev, "discovery", {}) or {}
+        alts = info.get("alternatives", [])
+        d["link"] = {
+            "uri": uri,
+            "kind": discovery.uri_kind(uri) if uri else "simulated",
+            "address": discovery.uri_address(uri),
+            "throughput_mb_s": next(
+                (t.get("throughput_mb_s") for t in alts if t.get("uri") == uri),
+                None),
+            "chosen_because": info.get("reason", ""),
+            "alternatives": [
+                {k: t.get(k) for k in ("uri", "kind", "throughput_mb_s", "error")}
+                for t in alts if t.get("uri") != uri],
+        }
         return d
 
     def set_caps_profile(self, device_id: str, profile: str) -> dict:
@@ -1144,6 +1556,7 @@ class Runtime:
             "version": __import__("forge_vision").__version__,
             "devices": [self._describe_device(d) for d in self.devices.values()],
             "safety": self.safety.status(),
+            "acquisition_stopped": self.stop_acquisition.is_set(),
             "storage": self.store.storage_stats(),
             "recent_experiments": self.store.list()[:8],
             "active_scans": {k: v["builder"].status() for k, v in self.scans.items()},

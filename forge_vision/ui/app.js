@@ -38,7 +38,7 @@ document.querySelectorAll("nav button").forEach((b) => {
     if (b.dataset.tab === "library") refreshLibrary();
     if (b.dataset.tab === "safety") refreshSafety();
     if (b.dataset.tab === "dashboard") refreshStatus();
-    if (b.dataset.tab === "antenna") refreshComponents();
+    if (b.dataset.tab === "hardware") refreshComponents();
     if (b.dataset.tab === "world") refreshSites();
     if (b.dataset.tab === "sage") refreshSage();
   };
@@ -56,6 +56,85 @@ function setTxIndicator(safety) {
   }
 }
 
+const LINK_LABEL = { network: "Ethernet", usb: "USB",
+                     "usb-gadget": "USB (network gadget)",
+                     simulated: "Simulated" };
+
+function linkLine(d) {
+  const L = d.link || { kind: "simulated" };
+  const speed = L.throughput_mb_s ? `${L.throughput_mb_s} MB/s` : "";
+  return `<span class="dot ${d.connected ? "on" : "off"}"></span>
+    <b>${esc(d.kind === "simulated_pluto_plus" ? "Simulated radio" : "Pluto")}</b>
+    <span class="linkbadge link-${esc(L.kind)}">${esc(LINK_LABEL[L.kind] || L.kind)}</span>
+    ${L.address ? `<span class="addr">${esc(L.address)}</span>` : ""}
+    ${speed ? `<span class="mut"> · ${esc(speed)}</span>` : ""}
+    ${d.tx_enabled ? '<span class="tag" style="background:#57120a;color:#ffb4a4">TX ON</span>' : ""}`;
+}
+
+function settingsLine(d) {
+  return `${fmtHz(d.config.center_frequency_hz)} ·
+    ${(d.config.sample_rate_hz / 1e6).toFixed(2)} MSPS ·
+    RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB`;
+}
+
+// Dashboard: what is in force, with no way to change it from here.
+function renderDashRadios(devices) {
+  if (!$("dash-radio")) return;
+  const live = devices.filter((d) => d.connected);
+  const shown = live.length ? live : devices;
+  $("dash-radio").innerHTML = shown.map((d) => `
+    <div class="devcard">
+      <div class="devmain">${linkLine(d)}<br>
+        <span class="mut">${settingsLine(d)}</span>
+        ${d.connected ? "" : '<br><span class="mut">not connected</span>'}
+      </div>
+    </div>`).join("") || '<span class="mut">no radios</span>';
+}
+
+// Hardware: the same radios, with the controls that change them.
+function renderDeviceCards(devices) {
+  if (!$("device-list")) return;
+  $("device-list").innerHTML = devices.map((d) => {
+    const L = d.link || { kind: "simulated" };
+    // One button per genuinely different kind of link, fastest of each, and
+    // never the kind we are already using.
+    const byKind = new Map();
+    for (const a of (L.alternatives || [])) {
+      if (a.error || a.kind === L.kind) continue;
+      const cur = byKind.get(a.kind);
+      if (!cur || (a.throughput_mb_s || 0) > (cur.throughput_mb_s || 0)) byKind.set(a.kind, a);
+    }
+    const alts = [...byKind.values()];
+    return `
+    <div class="devcard">
+      <div class="devmain">${linkLine(d)}<br>
+        <span class="mut">${settingsLine(d)}</span>
+        <details>
+          <summary>capabilities &amp; notes</summary>
+          <span class="mut">
+            id <code>${esc(d.device_id)}</code><br>
+            tuning ${fmtHz(d.capabilities.min_frequency)}–${fmtHz(d.capabilities.max_frequency)} ·
+            max BW ${(d.capabilities.max_bandwidth / 1e6).toFixed(0)} MHz<br>
+            waveforms: ${(d.compatible_waveforms || []).map(esc).join(", ") || "none"}
+            ${L.chosen_because ? "<br>chose this link: " + esc(L.chosen_because) : ""}
+            ${(d.capability_notes || []).map((n) => "<br>" + esc(n)).join("")}
+          </span>
+        </details>
+      </div>
+      <div class="devactions">
+        ${d.connected
+          ? `<button onclick="devDisconnect('${esc(d.device_id)}')">Disconnect</button>`
+          : `<button onclick="devConnect('${esc(d.device_id)}')">Connect</button>`}
+        ${alts.map((a) => `<button title="${esc(a.uri)}"
+             onclick="switchTransport('${esc(d.device_id)}','${esc(a.uri)}')"
+             >Use ${esc(LINK_LABEL[a.kind] || a.kind)}${
+               a.throughput_mb_s ? ` (${a.throughput_mb_s} MB/s)` : ""}</button>`).join("")}
+        ${L.kind === "simulated" ? ""
+          : `<button onclick="forgetDevice('${esc(d.device_id)}')">Forget</button>`}
+      </div>
+    </div>`; }).join("");
+}
+
 async function refreshStatus() {
   try {
     STATUS = await api("/api/status");
@@ -71,27 +150,27 @@ async function refreshStatus() {
 
 function renderDashboard() {
   const s = STATUS;
-  $("device-list").innerHTML = s.devices.map((d) => `
-    <div class="devcard">
-      <div><span class="dot ${d.connected ? "on" : "off"}"></span>
-        <b>${esc(d.device_id)}</b> <span class="mut">${esc(d.kind)}</span><br>
-        <span class="mut">${fmtHz(d.config.center_frequency_hz)} ·
-        ${(d.config.sample_rate_hz / 1e6).toFixed(2)} MSPS ·
-        RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB<br>
-        tuning ${fmtHz(d.capabilities.min_frequency)}–${fmtHz(d.capabilities.max_frequency)} ·
-        max BW ${(d.capabilities.max_bandwidth / 1e6).toFixed(0)} MHz ·
-        waveforms: ${(d.compatible_waveforms || []).map(esc).join(", ") || "none"}
-        ${(d.capability_notes || []).map((n) => "<br>" + esc(n)).join("")}</span></div>
-      <div>${d.tx_enabled ? '<span class="tag" style="background:#57120a;color:#ffb4a4">TX</span>' : ""}
-        ${d.connected
-          ? `<button onclick="devDisconnect('${d.device_id}')">Disconnect</button>`
-          : `<button onclick="devConnect('${d.device_id}')">Connect</button>`}</div>
-    </div>`).join("");
+  renderDeviceCards(s.devices);
+  renderDashRadios(s.devices);
+  renderAttention(s);
+
+  const st = s.storage, sf = s.safety;
   $("system-info").innerHTML = `
-    <div class="mono">version ${esc(s.version)}
-storage: ${fmtBytes(s.storage.experiments_bytes)} experiments · ${fmtBytes(s.storage.disk_free_bytes)} free${s.storage.low_space_warning ? " ⚠ LOW" : ""}
-safety: ${s.safety.armed ? "armed by " + esc(s.safety.armed_by) : "disarmed"} · profile ${esc(s.safety.limits.active_profile)}
-active scans: ${Object.keys(s.active_scans).length}</div>`;
+    <div class="sysrow"><span class="k">Version</span><span>${esc(s.version)}</span></div>
+    <div class="sysrow"><span class="k">Captures stored</span>
+      <span>${fmtBytes(st.experiments_bytes)}</span></div>
+    <div class="sysrow"><span class="k">Disk free</span>
+      <span>${fmtBytes(st.disk_free_bytes)}${
+        st.low_space_warning ? ' <span style="color:var(--warn)">LOW</span>' : ""}</span></div>
+    <div class="sysrow"><span class="k">Transmit</span>
+      <span>${sf.armed
+        ? `<span style="color:var(--warn)">armed by ${esc(sf.armed_by)}</span>`
+        : "disarmed"}</span></div>
+    <div class="sysrow"><span class="k">Safety profile</span>
+      <span>${esc(sf.limits.active_profile)}</span></div>
+    <div class="sysrow"><span class="k">Scans in progress</span>
+      <span>${Object.keys(s.active_scans).length}</span></div>`;
+  refreshRadioBook();
   $("recent-experiments").innerHTML = s.recent_experiments.map((e) => `
     <div class="expitem" onclick="openLibrary('${e.experiment_id}')">
       <div><b>${esc(e.name)}</b> <span class="tag">${esc(e.kind)}</span>
@@ -138,6 +217,45 @@ function fillSelectors() {
 ["live-device", "range-device", "scan-device"].forEach((id) =>
   $(id).addEventListener("change", () => { if (STATUS) fillSelectors(); }));
 
+window.forgetDevice = async (id) => {
+  if (!confirm(`Forget ${id}?\n\nThis removes it from the list. The next scan will find it again.`)) return;
+  try { await api(`/api/devices/${encodeURIComponent(id)}/forget`, { method: "POST" }); }
+  catch (e) { alert(e.message || e); }
+  refreshStatus();
+};
+
+window.switchTransport = async (id, uri) => {
+  $("rescan-status").textContent = `switching to ${uri}…`;
+  try {
+    await api(`/api/devices/${encodeURIComponent(id)}/switch_transport`,
+              { method: "POST", body: { uri } });
+    $("rescan-status").textContent = `now on ${uri}`;
+  } catch (e) { $("rescan-status").textContent = `could not switch: ${e.message || e}`; }
+  refreshStatus();
+};
+
+async function refreshRadioBook() {
+  if (!$("radio-book")) return;
+  let list;
+  try { list = await api("/api/radios"); } catch (e) { return; }
+  $("radio-book").innerHTML = list.map((r) => `
+    <div class="pathrow">
+      <span class="grow">${esc(r.label)}
+        <span class="addr">${esc(r.uri)}</span>
+        ${r.in_use ? '<span class="tag">in use</span>' : ""}
+        ${r.overridden_by_env
+          ? '<span class="tag" style="background:#3a2f12;color:#e8c96a">overridden by FORGE_VISION_PLUTO_URIS</span>'
+          : ""}</span>
+      <button onclick="removeRadio('${esc(r.radio_id)}')">Remove</button>
+    </div>`).join("") ||
+    '<div class="mut" style="padding:4px 0">none saved — USB and pluto.local are always checked</div>';
+}
+
+window.removeRadio = async (id) => {
+  await api(`/api/radios/${encodeURIComponent(id)}/delete`, { method: "POST" });
+  refreshRadioBook();
+};
+
 window.devConnect = async (id) => { await api(`/api/devices/${id}/connect`, { method: "POST" }); refreshStatus(); };
 window.devDisconnect = async (id) => { await api(`/api/devices/${id}/disconnect`, { method: "POST" }); refreshStatus(); };
 
@@ -176,32 +294,368 @@ window.jobRetry = async (id) => {
   await api(`/api/jobs/${id}/retry`, { method: "POST" }); refreshJobs();
 };
 
-async function refreshChain() {
-  let comps;
-  try { comps = await api("/api/components"); } catch (e) { return; }
-  const opts = comps.map((c) =>
-    `<option value="${esc(c.component_id)}">${esc(c.kind)}: ${esc(c.name)}</option>`).join("");
-  for (const id of ["chain-tx", "chain-rx"]) {
-    const sel = $(id);
-    const chosen = [...sel.selectedOptions].map((o) => o.value);
-    sel.innerHTML = opts;
-    [...sel.options].forEach((o) => { o.selected = chosen.includes(o.value); });
-  }
-  const r = await api("/api/rf_chain");
-  const c = r.resolved;
-  $("chain-summary").innerHTML =
-    `TX: ${c.tx_path.map((x) => esc(x.name)).join(" → ") || "—"} · ` +
-    `RX: ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>` +
-    `total nominal loss ${c.total_loss_db} dB, delay ${c.total_delay_ns} ns` +
-    (c.note ? `<br><span style="color:#e8c96a">${esc(c.note)}</span>` : "");
+// The chain the operator is editing. Held locally so the path can be
+// reordered without a round trip per click, then pushed as one declaration.
+let chainState = { tx_ids: [], rx_ids: [], antenna_tx: "", antenna_rx: "" };
+let chainComps = [];
+
+const compById = (id) => chainComps.find((x) => x.component_id === id);
+
+function fmtLoss(c) {
+  if (c.nominal_loss_db === null || c.nominal_loss_db === undefined) return null;
+  return `${c.nominal_loss_db} dB`;
 }
 
-$("chain-save").onclick = async () => {
-  const pick = (id) => [...$(id).selectedOptions].map((o) => o.value);
-  await api("/api/rf_chain", { method: "POST", body: {
-    tx_ids: pick("chain-tx"), rx_ids: pick("chain-rx") } });
+// One block in the signal-flow view. Amber border when the part has no
+// measured loss, because that is exactly what the totals are missing.
+function chainBlock(comp, kind) {
+  if (!comp) return "";
+  const loss = fmtLoss(comp);
+  const cls = kind === "antenna" ? "antenna" : (loss === null ? "unchar" : "");
+  const sub = kind === "antenna"
+    ? (comp.has_vna || comp.vna ? "characterised" : "no VNA data")
+    : (loss === null ? "loss unknown" : loss);
+  return `<div class="chainblk ${cls}">
+    <b>${esc(comp.name)}</b><span class="sub">${esc(comp.kind)} · ${esc(sub)}</span></div>`;
+}
+
+const ARROW = (t) => `<div class="chainarrow">${t}</div>`;
+
+function renderChainFlow(c) {
+  const radio = `<div class="chainblk radio"><b>Radio</b><span class="sub">RX / TX port</span></div>`;
+  const rxAnt = compById(c.antenna_rx);
+  const txAnt = compById(c.antenna_tx);
+  let html = "";
+
+  if (rxAnt || c.rx_path.length) {
+    html += `<div class="subhead" style="margin-top:0">Receive</div><div class="chainflow">`;
+    html += rxAnt ? chainBlock(rxAnt, "antenna")
+                  : '<div class="chainblk unchar"><b>no antenna</b><span class="sub">not declared</span></div>';
+    for (const comp of c.rx_path) { html += ARROW("→") + chainBlock(comp, comp.kind); }
+    html += ARROW("→") + radio + `</div>`;
+  }
+  if (txAnt || c.tx_path.length) {
+    html += `<div class="subhead">Transmit</div><div class="chainflow">` + radio;
+    for (const comp of c.tx_path) { html += ARROW("→") + chainBlock(comp, comp.kind); }
+    html += ARROW("→") + (txAnt ? chainBlock(txAnt, "antenna")
+      : '<div class="chainblk unchar"><b>no antenna</b><span class="sub">not declared</span></div>');
+    html += `</div>`;
+  }
+  if (!html) {
+    html = '<div class="chainempty">Nothing declared yet — pick an antenna below and add cables.</div>';
+  }
+  $("chain-flow").innerHTML = html;
+}
+
+function renderChainFacts(c) {
+  const band = c.band || {};
+  const bands = (band.usable_bands || [])
+    .map((b) => `<span class="tag" style="background:#12241d;border:1px solid #1f4a38;color:#86dfc0">${
+      fmtHz(b.start_hz)}–${fmtHz(b.stop_hz)}</span>`).join(" ");
+  let html = `<p class="mut" style="margin:8px 0 4px">`
+    + `Total nominal loss <b>${c.total_loss_db} dB</b>`
+    + ` · delay <b>${c.total_delay_ns} ns</b></p>`;
+  html += `<p style="margin:4px 0"><span class="mut">Usable band:</span> `
+    + (bands || '<span class="mut">unknown</span>') + `</p>`;
+  for (const n of [c.note, band.note].filter(Boolean)) {
+    html += `<p style="color:var(--warn);margin:4px 0">${esc(n)}</p>`;
+  }
+  $("chain-facts").innerHTML = html;
+
+  const badge = c.config_name
+    ? `<span class="tag">${esc(c.config_name)}</span>` +
+      (c.config_modified ? '<span class="tag" style="background:#3a2f12;color:#e8c96a">modified</span>' : "")
+    : '<span class="tag" style="background:#2a2f3a;color:#9aa8bd">unsaved</span>';
+  $("chain-badge").innerHTML = badge;
+}
+
+// An RF path is a series of parts in a physical order. It is built by dragging
+// inventory onto a port rather than picking from a list, because the thing an
+// operator is describing is physical: this cable goes into that socket. The
+// ports are drawn from the connected radio's channel counts, so a 2R2T board
+// grows extra sockets without any change here.
+function radioPorts() {
+  const dev = (STATUS && STATUS.devices || []).find(
+    (d) => d.connected && d.kind !== "simulated_pluto_plus")
+    || (STATUS && STATUS.devices || []).find((d) => d.connected);
+  const caps = (dev && dev.capabilities) || { rx_channels: 1, tx_channels: 1 };
+  return {
+    name: dev ? (dev.kind === "simulated_pluto_plus" ? "Simulated" : "Pluto") : "Radio",
+    rx: Math.max(1, caps.rx_channels || 1),
+    tx: Math.max(1, caps.tx_channels || 1),
+  };
+}
+
+function chipHtml(c, opts = {}) {
+  const loss = fmtLoss(c);
+  const cls = [c.kind === "antenna" ? "antenna" : "",
+               (c.kind !== "antenna" && loss === null) ? "unchar" : ""].join(" ");
+  const sub = c.kind === "antenna"
+    ? (c.has_vna ? "characterised" : "no VNA data")
+    : (loss === null ? "loss unknown" : loss);
+  return `<div class="chip ${cls}" draggable="true"
+      data-cid="${esc(c.component_id)}" data-kind="${esc(c.kind)}"
+      ${opts.from ? `data-from="${esc(opts.from)}" data-idx="${opts.idx}"` : ""}>
+    <b>${esc(c.name)}${opts.from !== undefined && opts.from !== null
+        ? `<span class="chipx" data-drop-cid="${esc(c.component_id)}"
+             data-drop-from="${esc(opts.from)}" data-drop-idx="${opts.idx}"
+             title="remove">✕</span>` : ""}</b>
+    <span class="sub">${esc(c.kind)} · ${esc(sub)}</span>
+  </div>`;
+}
+
+function portHtml(kind, n, total) {
+  return `<div class="port"><b>${kind}${total > 1 ? n : ""}</b>
+    <span class="sub">${kind === "RX" ? "receive" : "transmit"} port</span></div>`;
+}
+
+const ARROW_EL = (t) => `<div class="chainarrow">${t}</div>`;
+
+function renderDropZone(which) {
+  const host = $(`path-${which}`);
+  if (!host) return;
+  const ports = radioPorts();
+  const ids = chainState[`${which}_ids`];
+  const antId = chainState[which === "rx" ? "antenna_rx" : "antenna_tx"];
+  const ant = antId ? compById(antId) : null;
+
+  const antSlot = ant
+    ? chipHtml(ant, { from: `${which}-antenna`, idx: 0 })
+    : `<div class="slot">drop an antenna here</div>`;
+  const parts = ids.map((id, i) => {
+    const c = compById(id);
+    if (!c) return `<div class="chip unchar"><b>missing</b>
+        <span class="sub">${esc(id)}</span></div>`;
+    return chipHtml(c, { from: which, idx: i });
+  });
+  const portBlocks = [];
+  const count = which === "rx" ? ports.rx : ports.tx;
+  for (let i = 1; i <= count; i++) {
+    portBlocks.push(portHtml(which.toUpperCase(), i, count));
+  }
+  const portEl = portBlocks.join("");
+
+  // signal order: RX runs antenna -> radio, TX runs radio -> antenna
+  const seq = which === "rx"
+    ? [antSlot, ...parts, portEl]
+    : [portEl, ...parts.slice().reverse(), antSlot];
+  host.innerHTML = seq.join(ARROW_EL("→")) ||
+    '<span class="hint">drag a part here</span>';
+  if (!ids.length && !ant) {
+    host.insertAdjacentHTML("beforeend",
+      ' <span class="hint" style="margin-left:10px">nothing patched yet</span>');
+  }
+}
+
+function renderPalette() {
+  const host = $("chain-palette");
+  if (!host) return;
+  host.innerHTML = chainComps.map((c) => chipHtml(c)).join("") ||
+    '<span class="mut">no components yet — add them under Components below</span>';
+  const pick = $("add-pick");
+  if (pick) {
+    pick.innerHTML = chainComps.map((c) =>
+      `<option value="${esc(c.component_id)}">${esc(c.kind)}: ${esc(c.name)}</option>`)
+      .join("") || '<option value="">add components first</option>';
+  }
+}
+
+// --- drag plumbing ---------------------------------------------------------
+document.addEventListener("dragstart", (ev) => {
+  const chip = ev.target.closest && ev.target.closest(".chip");
+  if (!chip) return;
+  ev.dataTransfer.effectAllowed = "move";
+  ev.dataTransfer.setData("text/plain", JSON.stringify({
+    cid: chip.dataset.cid, kind: chip.dataset.kind,
+    from: chip.dataset.from || "", idx: chip.dataset.idx }));
+  chip.classList.add("dragging");
+});
+document.addEventListener("dragend", (ev) => {
+  const chip = ev.target.closest && ev.target.closest(".chip");
+  if (chip) chip.classList.remove("dragging");
+});
+document.addEventListener("dragover", (ev) => {
+  const zone = ev.target.closest && ev.target.closest(".dropzone");
+  if (!zone) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "move";
+  zone.classList.add("over");
+});
+document.addEventListener("dragleave", (ev) => {
+  const zone = ev.target.closest && ev.target.closest(".dropzone");
+  if (zone && !zone.contains(ev.relatedTarget)) zone.classList.remove("over");
+});
+document.addEventListener("drop", (ev) => {
+  const zone = ev.target.closest && ev.target.closest(".dropzone");
+  if (!zone) return;
+  ev.preventDefault();
+  zone.classList.remove("over");
+  let payload;
+  try { payload = JSON.parse(ev.dataTransfer.getData("text/plain")); }
+  catch (e) { return; }
+  dropOnPath(zone.dataset.path, payload);
+});
+
+function removeFrom(from, idx, cid) {
+  if (from === "rx" || from === "tx") {
+    chainState[`${from}_ids`].splice(Number(idx), 1);
+  } else if (from === "rx-antenna") {
+    chainState.antenna_rx = "";
+  } else if (from === "tx-antenna") {
+    chainState.antenna_tx = "";
+  }
+}
+
+function dropOnPath(which, { cid, kind, from, idx }) {
+  if (from) removeFrom(from, idx, cid);
+  if (kind === "antenna") {
+    // One antenna per side: a port has a single thing screwed onto the end of
+    // it, so dropping a second replaces the first rather than stacking.
+    chainState[which === "rx" ? "antenna_rx" : "antenna_tx"] = cid;
+  } else {
+    chainState[`${which}_ids`].push(cid);
+  }
+  pushChain();
+}
+
+// removing a chip with the little x
+document.addEventListener("click", (ev) => {
+  const x = ev.target.closest && ev.target.closest(".chipx");
+  if (!x) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  removeFrom(x.dataset.dropFrom, x.dataset.dropIdx, x.dataset.dropCid);
+  pushChain();
+});
+
+async function pushChain() {
+  await api("/api/rf_chain", { method: "POST", body: chainState });
+  refreshChain();
+}
+
+async function refreshChain() {
+  try { chainComps = await api("/api/components"); } catch (e) { return; }
+  const r = await api("/api/rf_chain");
+  const c = r.resolved;
+  chainState = {
+    tx_ids: [...r.declared.tx_ids], rx_ids: [...r.declared.rx_ids],
+    antenna_tx: r.declared.antenna_tx, antenna_rx: r.declared.antenna_rx,
+  };
+
+  // dashboard keeps a plain-language summary; the lab gets the visual
+  if ($("chain-summary")) {
+    const nm = (id) => { const x = compById(id); return x ? esc(x.name) : "—"; };
+    $("chain-summary").innerHTML =
+      (c.config_name ? `<b>${esc(c.config_name)}</b>${c.config_modified ? " (modified)" : ""}<br>` : "")
+      + `RX: ${nm(c.antenna_rx)} → ${c.rx_path.map((x) => esc(x.name)).join(" → ") || "—"}<br>`
+      + `TX: ${c.tx_path.map((x) => esc(x.name)).join(" ← ") || "—"} ← ${nm(c.antenna_tx)}<br>`
+      + `total nominal loss ${c.total_loss_db} dB, delay ${c.total_delay_ns} ns`
+      + (c.note ? `<br><span style="color:var(--warn)">${esc(c.note)}</span>` : "");
+  }
+  if (!$("chain-flow")) return;      // dashboard-only refresh
+
+  renderChainFlow(c);
+  renderChainFacts(c);
+  renderPalette();
+  renderDropZone("rx");
+  renderDropZone("tx");
+  await refreshChainConfigs();
+}
+
+async function refreshChainConfigs() {
+  if (!$("chain-config-list")) return;
+  let list;
+  try { list = await api("/api/chains"); } catch (e) { return; }
+  $("chain-config-list").innerHTML = list.map((c) => `
+    <div class="row${c.active ? " on" : ""}">
+      <span>${c.active ? "● " : ""}${esc(c.name)}
+        <span class="mut">${c.measurement_count} measurement${
+          c.measurement_count === 1 ? "" : "s"}</span></span>
+      <span>
+        <button onclick="activateChain('${esc(c.config_id)}')"${
+          c.active ? " disabled" : ""}>Activate</button>
+        <button onclick="deleteChain('${esc(c.config_id)}')">Delete</button>
+      </span>
+    </div>`).join("") ||
+    '<span class="mut">no saved configurations yet — patch a chain, then name and save it</span>';
+
+  const active = list.find((c) => c.active);
+  if (!active) {
+    $("chain-measurements").innerHTML =
+      '<span class="mut">activate a configuration to see its measurements</span>';
+    return;
+  }
+  const detail = await api(`/api/chains/${active.config_id}`);
+  $("chain-measurements").innerHTML = (detail.measurements || []).map((m) => {
+    if (m.missing) {
+      return `<div class="row"><span>${esc(m.experiment_id)}</span>
+        <span style="color:#e8c96a">capture deleted</span></div>`;
+    }
+    const s = m.summary || {};
+    const band = s.start_hz
+      ? `${(s.start_hz / 1e6).toFixed(0)}–${(s.stop_hz / 1e6).toFixed(0)} MHz`
+      : "";
+    const floor = s.median_noise_floor_dbfs !== undefined
+      ? `median floor ${s.median_noise_floor_dbfs} dBFS` : "";
+    return `<div class="row">
+      <span><a href="#" onclick="openLibrary('${esc(m.experiment_id)}');return false">${
+        esc(m.kind || "measurement")}</a>
+        <span class="mut">${esc(band)}</span></span>
+      <span class="mut">${esc(floor)}</span></div>`;
+  }).join("") ||
+    '<span class="mut">no measurements yet — run a band survey with this configuration active</span>';
+}
+
+window.activateChain = async (id) => {
+  await api(`/api/chains/${id}/activate`, { method: "POST" });
   refreshChain();
 };
+
+window.deleteChain = async (id) => {
+  if (!confirm("Delete this configuration? Measurements taken with it are kept.")) return;
+  await api(`/api/chains/${id}/delete`, { method: "POST" });
+  refreshChain();
+};
+
+// Keyboard/touch fallback: drag-and-drop is the fast path, not the only one.
+$("add-go").onclick = () => {
+  const cid = $("add-pick").value;
+  if (!cid) return;
+  const c = compById(cid);
+  dropOnPath($("add-where").value, { cid, kind: c ? c.kind : "", from: "", idx: 0 });
+};
+
+$("chain-clear").onclick = () => {
+  chainState = { tx_ids: [], rx_ids: [], antenna_tx: "", antenna_rx: "" };
+  pushChain();
+};
+
+$("chain-detach").onclick = async () => {
+  await api("/api/chains/detach", { method: "POST" });
+  refreshChain();
+};
+
+$("chain-config-save").onclick = async () => {
+  const name = $("chain-config-name").value.trim();
+  if (!name) { alert("Give the configuration a name so it can be reused."); return; }
+  try {
+    await api("/api/chains", { method: "POST", body: { name } });
+  } catch (e) {
+    alert(`Could not save: ${e.message || e}`); return;
+  }
+  $("chain-config-name").value = "";
+  refreshChain();
+};
+
+// Cross-page links. Delegated rather than bound once at load, because several
+// of these are rendered into panels that redraw on every status poll.
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest("[data-goto]");
+  if (!a) return;
+  ev.preventDefault();
+  const btn = document.querySelector(`nav button[data-tab="${a.dataset.goto}"]`);
+  if (btn) btn.click();
+});
 
 $("atten-save").onclick = async () => {
   await api("/api/safety/path_attenuation", { method: "POST",
@@ -215,35 +669,108 @@ async function refreshRxProtection() {
   let c;
   try { c = await api(`/api/safety/rx_protection?device_id=${encodeURIComponent(dev)}`); }
   catch (e) { return; }
-  const cls = { critical: "err", warn: "warn", ok: "" }[c.severity];
-  $("rx-protection").innerHTML = c.severity === "ok"
-    ? `<div class="mut">Estimated ${c.rx_input_dbm} dBm at the receive port —
-       within safe limits (damage above ${c.thresholds.damage_dbm} dBm).</div>`
-    : `<div class="alert ${cls}"><b>${c.severity === "critical"
-        ? "Receiver at risk" : "Receive path warning"}</b> —
-       estimated ${c.rx_input_dbm} dBm at the port.<br>
-       ${c.warnings.map(esc).join("<br>")}</div>`;
+
+  // This check is a *prediction*: it assumes a transmit at full output with
+  // whatever isolation has been declared. Until the platform is armed no such
+  // transmit can happen, so at rest it is pre-flight advice, not an alarm.
+  // Painting it red on an idle bench trains an operator to ignore red — which
+  // is a way of hiding the problem, not surfacing it.
+  const armed = !!(STATUS.safety && STATUS.safety.armed);
+  const txLive = !!(STATUS.safety && STATUS.safety.tx_active);
+  const imminent = armed || txLive;
+
+  if (c.severity === "ok") {
+    $("rx-protection").innerHTML =
+      `<div class="mut">Receive path: estimated ${c.rx_input_dbm} dBm at the port
+       if you transmit — within safe limits (damage above
+       ${c.thresholds.damage_dbm} dBm).</div>`;
+    return;
+  }
+  const cls = imminent ? (c.severity === "critical" ? "err" : "warn") : "warn";
+  const head = imminent
+    ? (c.severity === "critical" ? "Receiver at risk — TX is live"
+                                 : "Receive path warning — TX is live")
+    : "Before you transmit";
+  const lead = imminent
+    ? `estimated ${c.rx_input_dbm} dBm at the port.`
+    : `this configuration would put an estimated ${c.rx_input_dbm} dBm at the
+       receive port. Nothing is transmitting, so nothing is at risk yet.`;
+  $("rx-protection").innerHTML =
+    `<div class="alert ${cls}"><b>${esc(head)}</b> — ${lead}<br>
+     ${c.warnings.map(esc).join("<br>")}
+     <br><span class="mut">Declare the isolation between TX and RX in
+     <a href="#" data-goto="hardware">Hardware</a>.</span></div>`;
+}
+
+// Things that are wrong *now*, as opposed to things that would be wrong if you
+// transmitted. Kept separate so a prediction never masquerades as a fault.
+function renderAttention(s) {
+  if (!$("dash-attention")) return;
+  const items = [];
+  if (!s.devices.some((d) => d.connected && d.kind !== "simulated_pluto_plus")) {
+    items.push(["warn", `No radio is connected. <a href="#" data-goto="hardware">Set one up</a>.`]);
+  }
+  if (s.storage && s.storage.low_space_warning) {
+    items.push(["err", "Disk space is low; captures are immutable and accumulate."]);
+  }
+  $("dash-attention").innerHTML = items.map(
+    ([c, t]) => `<div class="alert ${c}">${t}</div>`).join("");
 }
 
 /* ---------- hardware rescan ---------- */
 async function doRescan(uri) {
-  $("rescan-status").textContent = "probing…";
+  // Measuring every transport takes a few seconds, so say so rather than
+  // leaving a button that looks like it did nothing.
+  $("rescan-status").textContent = uri
+    ? `connecting to ${uri}…` : "measuring each way in…";
   try {
     const r = await api("/api/devices/rescan", { method: "POST", body: { uri } });
     if (!r.driver.available) { $("rescan-status").textContent = r.driver.detail; return; }
     const bits = [];
-    if (r.added.length) bits.push("added: " + r.added.map((d) => d.device_id).join(", "));
-    if (r.already_present.length) bits.push("already present: " + r.already_present.join(", "));
+    for (const d of r.added) {
+      const L = d.link || {};
+      bits.push(`found a radio over ${L.kind === "network" ? "Ethernet" : L.kind}` +
+                (L.address ? ` at ${L.address}` : "") +
+                (L.throughput_mb_s ? ` (${L.throughput_mb_s} MB/s)` : ""));
+    }
+    if (r.already_present.length) bits.push("already listed: " + r.already_present.join(", "));
     r.errors.forEach((e) => bits.push(`${e.uri}: ${e.error}`));
-    $("rescan-status").textContent = bits.join(" · ") || "no devices found";
+    $("rescan-status").textContent = bits.join(" · ") || "no radios found";
     refreshStatus();
-  } catch (e) { $("rescan-status").textContent = "rescan failed: " + e.message; }
+  } catch (e) { $("rescan-status").textContent = "scan failed: " + e.message; }
 }
 $("rescan-btn").onclick = () => doRescan("");
-$("rescan-uri-btn").onclick = () => doRescan($("rescan-uri").value.trim());
+
+$("radio-add").onclick = async () => {
+  const address = $("radio-addr").value.trim();
+  if (!address) { alert("Enter the radio's hostname or IP address."); return; }
+  try {
+    await api("/api/radios", { method: "POST", body: {
+      address, label: $("radio-label").value.trim() } });
+  } catch (e) { alert(`Could not save that address: ${e.message || e}`); return; }
+  $("radio-addr").value = ""; $("radio-label").value = "";
+  await refreshRadioBook();
+  doRescan("");          // saving an address is a request to go and look
+};
 
 /* ---------- Live RF ---------- */
 let waterfallRows = [];
+
+// Show what the radio is actually set to, not what the boxes were last left
+// at. These are editable, so they are only synced on connect and on selecting
+// a device — never per frame, which would fight the operator mid-keystroke.
+async function syncDeviceConfigInputs(id) {
+  let st;
+  try { st = await api("/api/status"); } catch (e) { return; }
+  const d = (st.devices || []).find((x) => x.device_id === id);
+  if (!d || !d.config) return;
+  const c = d.config;
+  $("cfg-freq").value = (c.center_frequency_hz / 1e6).toFixed(3).replace(/\.?0+$/, "");
+  $("cfg-rate").value = (c.sample_rate_hz / 1e6).toFixed(2);
+  $("cfg-bw").value = (c.rx_bandwidth_hz / 1e6).toFixed(0);
+  $("cfg-rxgain").value = c.rx_gain_db;
+  $("cfg-txgain").value = c.tx_gain_db;
+}
 
 $("live-connect").onclick = async () => {
   const id = $("live-device").value;
@@ -253,6 +780,7 @@ $("live-connect").onclick = async () => {
     $("live-stream").disabled = false;
     $("live-tx").disabled = false;
     $("live-record").disabled = false;
+    await syncDeviceConfigInputs(id);
     refreshStatus();
   } catch (e) { $("live-status").textContent = "error: " + e.message; }
 };
@@ -267,14 +795,21 @@ $("cfg-apply").onclick = async () => {
       rx_gain_db: parseFloat($("cfg-rxgain").value),
       tx_gain_db: parseFloat($("cfg-txgain").value),
     }});
+    await syncDeviceConfigInputs(id);
     $("live-status").textContent = "config applied";
   } catch (e) { $("live-status").textContent = "rejected: " + e.message; }
 };
 
+$("live-device").onchange = () => syncDeviceConfigInputs($("live-device").value);
+
 $("live-stream").onclick = () => {
   if (ws) { ws.close(); ws = null; $("live-stream").textContent = "Start stream"; return; }
   const id = $("live-device").value;
-  ws = new WebSocket(`ws://${location.host}/ws/live?device_id=${id}&fps=6`);
+  liveAlerts.clear();
+  paintLiveAlerts();
+  if (!window._liveAlertTimer) window._liveAlertTimer = setInterval(paintLiveAlerts, 1000);
+  ws = new WebSocket(
+    `ws://${location.host}/ws/live?device_id=${encodeURIComponent(id)}&fps=6`);
   $("live-stream").textContent = "Stop stream";
   ws.onmessage = (ev) => {
     const f = JSON.parse(ev.data);
@@ -317,14 +852,58 @@ $("live-record").onclick = async () => {
   } catch (e) { $("live-status").textContent = "record failed: " + e.message; }
 };
 
+// Live alerts are held, counted and timestamped rather than redrawn from the
+// current frame alone (UX-LIVE-005).
+//
+// Measured on the bench radio: clipping fired on 1 frame in 87 and
+// near-clipping on 2. Because this function used to overwrite innerHTML every
+// frame, each of those was on screen for a single frame interval — about
+// 0.3 s — then erased by the next clean frame. Long enough to catch a flash of
+// colour, far too short to read. An intermittent fault is the kind that matters
+// most, so a fired alert now stays up, says how often it has happened and how
+// long ago, and expires only after the condition has been quiet for a while.
+const LIVE_ALERT_HOLD_MS = 20000;
+const liveAlerts = new Map();
+
+function noteAlert(key, cls, text) {
+  const now = Date.now();
+  const a = liveAlerts.get(key);
+  if (a) { a.count++; a.last = now; a.text = text; }
+  else liveAlerts.set(key, { cls, text, count: 1, last: now });
+}
+
+function paintLiveAlerts() {
+  if (!$("live-alerts")) return;
+  const now = Date.now();
+  const rows = [];
+  for (const [k, a] of liveAlerts) {
+    if (now - a.last > LIVE_ALERT_HOLD_MS) { liveAlerts.delete(k); continue; }
+    const ago = Math.round((now - a.last) / 1000);
+    rows.push(`<div class="alert ${a.cls}">${esc(a.text)}` +
+      `<span class="mut"> · ${a.count} time${a.count === 1 ? "" : "s"}` +
+      `, last ${ago}s ago</span></div>`);
+  }
+  $("live-alerts").innerHTML = rows.join("");
+}
+
 function renderLiveAlerts(f) {
-  const alerts = [];
-  if (f.clipped) alerts.push(["err", "Receiver clipping — reduce gain (UX-LIVE-005)"]);
-  if (f.loss_events && f.loss_events.length)
-    alerts.push(["err", `Sample loss: ${f.loss_events.length} event(s) — recorded, not concealed`]);
-  if (f.quality && f.quality.near_clipping) alerts.push(["warn", "Signal near full scale"]);
-  $("live-alerts").innerHTML = alerts.map(([c, t]) =>
-    `<div class="alert ${c}">${esc(t)}</div>`).join("");
+  const q = f.quality || {};
+  // peak_amplitude is linear against full scale, so 1.0 is the ADC ceiling.
+  const peak = q.peak_amplitude > 0
+    ? ` · peak ${(20 * Math.log10(q.peak_amplitude)).toFixed(1)} dBFS` : "";
+  const gain = f.config && f.config.rx_gain_db !== undefined
+    ? `, RX gain ${f.config.rx_gain_db} dB` : "";
+  if (f.clipped) {
+    noteAlert("clip", "err",
+      `Receiver clipping — samples are being lost at the ADC. Reduce RX gain${gain}${peak}`);
+  } else if (q.near_clipping) {
+    noteAlert("near", "warn", `Signal near full scale${gain}${peak}`);
+  }
+  if (f.loss_events && f.loss_events.length) {
+    noteAlert("loss", "err",
+      `Sample loss: ${f.loss_events.length} event(s) — recorded, not concealed`);
+  }
+  paintLiveAlerts();
 }
 
 function drawSpectrum(sp) {
@@ -1469,6 +2048,7 @@ let pinnedComp = null;          // second trace for comparison
 const TRACE_COLORS = ["#35c4a2", "#4aa3ff"];
 
 async function refreshComponents() {
+  refreshChain();
   const list = await api("/api/components");
   $("comp-list").innerHTML = list.map((c) => `
     <div class="expitem ${selectedComp === c.component_id ? "sel" : ""}"
@@ -1496,16 +2076,81 @@ $("comp-add").onclick = async () => {
 
 window.openComponent = async (id) => {
   selectedComp = id;
-  $("vna-upload").disabled = false;
-  $("comp-delete").disabled = false;
   const c = await api(`/api/components/${id}`);
-  const meta = { ...c };
-  if (meta.vna) meta.vna = { filename: meta.vna.filename, ports: meta.vna.ports,
-    points: meta.vna.freqs_hz.length, best_match: meta.vna.analysis.best_match };
-  $("comp-detail").textContent = JSON.stringify(meta, null, 1);
+  $("comp-edit").style.display = "";
+
+  const vna = c.vna;
+  const s21 = vna && vna.s21_analysis;
+  const row = (k, v, unknown) =>
+    `<dt>${esc(k)}</dt><dd class="${unknown ? "unknown" : ""}">${v}</dd>`;
+  const val = (x, fallback) => (x === null || x === undefined || x === ""
+    ? `<span class="mut">${fallback}</span>` : esc(String(x)));
+
+  let html = `<h3 style="margin:0 0 6px">${esc(c.name)}
+    <span class="tag">${esc(c.kind)}</span>
+    ${c.connector ? `<span class="tag">${esc(c.connector)}</span>` : ""}</h3><dl class="kv">`;
+  html += row("Claimed band", val(c.claimed_band, "not stated"));
+  if (c.kind === "antenna") html += row("Polarization", val(c.polarization, "not stated"));
+  html += row("Loss", c.nominal_loss_db === null || c.nominal_loss_db === undefined
+    ? '<span class="unknown">not characterised</span>' : `${c.nominal_loss_db} dB`,
+    c.nominal_loss_db === null || c.nominal_loss_db === undefined);
+  html += row("Delay", c.nominal_delay_ns === null || c.nominal_delay_ns === undefined
+    ? '<span class="unknown">not characterised</span>' : `${c.nominal_delay_ns} ns`,
+    c.nominal_delay_ns === null || c.nominal_delay_ns === undefined);
+  html += row("Added", new Date(c.created_at * 1000).toLocaleString());
+
+  if (vna) {
+    const b = vna.analysis.best_match;
+    html += row("VNA sweep", `${esc(vna.filename || "imported")} · ${vna.ports}-port · ` +
+      `${vna.freqs_hz.length} points, ${fmtHz(vna.freqs_hz[0])}–${fmtHz(vna.freqs_hz[vna.freqs_hz.length - 1])}`);
+    html += row("Best match", `VSWR ${b.vswr} at ${fmtHz(b.freq_hz)} (S11 ${b.s11_db} dB)`);
+    if (s21) {
+      html += row("Insertion loss",
+        `${s21.at_lowest.loss_db} dB at ${fmtHz(s21.at_lowest.freq_hz)} → ` +
+        `${s21.at_highest.loss_db} dB at ${fmtHz(s21.at_highest.freq_hz)}`);
+    }
+  } else {
+    html += row("VNA sweep", '<span class="mut">none imported</span>');
+  }
+  if (c.notes) html += row("Notes", esc(c.notes).replace(/\n/g, "<br>"));
+  html += `</dl>`;
+  $("comp-card").innerHTML = html;
+
+  $("comp-loss").value = c.nominal_loss_db ?? "";
+  $("comp-delay").value = c.nominal_delay_ns ?? "";
+  $("comp-notes").value = c.notes || "";
+  // Only offer to adopt a measurement that actually exists.
+  $("comp-adopt-loss").style.display = s21 ? "" : "none";
+
   renderBands(c);
-  drawVnaPlot(c, pinnedComp);
+  $("vna-panel").style.display = vna ? "" : "none";
+  if (vna) drawVnaPlot(c, pinnedComp);
   refreshComponents();
+};
+
+$("comp-save-char").onclick = async () => {
+  if (!selectedComp) return;
+  const num = (id) => ($(id).value === "" ? null : Number($(id).value));
+  await api(`/api/components/${selectedComp}/update`, { method: "POST", body: {
+    nominal_loss_db: num("comp-loss"), nominal_delay_ns: num("comp-delay") } });
+  openComponent(selectedComp);
+  refreshChain();
+};
+
+$("comp-save-notes").onclick = async () => {
+  if (!selectedComp) return;
+  await api(`/api/components/${selectedComp}/update`,
+            { method: "POST", body: { notes: $("comp-notes").value } });
+  openComponent(selectedComp);
+};
+
+$("comp-adopt-loss").onclick = async () => {
+  if (!selectedComp) return;
+  try {
+    await api(`/api/components/${selectedComp}/adopt_loss`, { method: "POST", body: {} });
+  } catch (e) { alert(e.message || e); return; }
+  openComponent(selectedComp);
+  refreshChain();
 };
 
 $("comp-pin").onchange = async () => {
@@ -1522,9 +2167,12 @@ $("comp-delete").onclick = async () => {
   if (!selectedComp || !confirm("Delete this component?")) return;
   await api(`/api/components/${selectedComp}/delete`, { method: "POST" });
   selectedComp = null;
-  $("comp-detail").textContent = "select a component";
+  $("comp-card").innerHTML = '<span class="mut">select a component</span>';
+  $("comp-edit").style.display = "none";
   $("comp-bands").innerHTML = "";
+  $("vna-panel").style.display = "none";
   refreshComponents();
+  refreshChain();       // the deleted part may have been in the active chain
 };
 
 $("vna-upload").onclick = async () => {

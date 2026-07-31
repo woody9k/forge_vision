@@ -93,6 +93,23 @@ base_url() {
     printf 'http://%s:%s' "$h" "$PORT"
 }
 
+# The address a person on the network would actually type. base_url() is for
+# health checks and deliberately stays on loopback; this is for humans.
+lan_ip() {
+    # awk rather than grep: it drains the input, so `set -o pipefail` cannot
+    # fail the pipeline on an early-exit SIGPIPE.
+    ip route get 1.1.1.1 2>/dev/null \
+        | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}'
+}
+
+# Print "reachable at ..." when bound somewhere a remote host can use.
+reachable_note() {
+    is_loopback && return 0
+    local addr
+    addr="$(lan_ip)"
+    [ -n "${addr:-}" ] && say "     reachable at: http://$addr:$PORT"
+}
+
 # ---------------------------------------------------------------- preflight
 cmd_preflight() {
     local fail=0
@@ -262,6 +279,7 @@ cmd_start() {
         fi
         if http_get "$(base_url)/api/status" >/dev/null; then
             ok "up (pid $child) — $(base_url)"
+            reachable_note
             say "logs: $LOG"
             return 0
         fi
@@ -304,6 +322,7 @@ cmd_status() {
     if pid="$(running_pid)"; then
         ok "running (pid $pid, up $(ps -p "$pid" -o etime= | tr -d ' '))"
         say "     url: $(base_url)"
+        reachable_note
         say "     data: $DATA"
         say "     log: $LOG"
         is_loopback || warn "bound to $HOST — network-reachable, unauthenticated"

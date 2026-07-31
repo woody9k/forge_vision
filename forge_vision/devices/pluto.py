@@ -27,6 +27,7 @@ import time
 
 import numpy as np
 
+from . import discovery
 from .base import (CaptureSegment, ConfigurationError, DeviceAdapter,
                    DeviceCapabilities)
 
@@ -79,26 +80,38 @@ class PlutoDevice(DeviceAdapter):
         self._detection_notes: list[str] = []
 
     @classmethod
-    def discover(cls, uris: tuple = DEFAULT_URIS) -> list["PlutoDevice"]:
-        """Probe the default transports for a radio.
+    def discover(cls, uris: tuple = (), prefer: str = "auto",
+                 measure: bool = True, book: tuple = ()) -> list["PlutoDevice"]:
+        """Probe every candidate transport and open one device per board.
 
-        `usb:` and `ip:192.168.2.1` are the *same* board — the latter is the
-        default address of the USB ethernet gadget — so we stop at the first
-        one that opens rather than registering one radio twice. A Pluto+ on a
-        real Ethernet port has a different LAN address and is added through
-        the explicit-URI path instead.
+        `usb:`, the 192.168.2.1 gadget and a physical Ethernet port are all
+        ways into the *same* radio, so this groups them and opens exactly one
+        — registering two would give two entries whose cached configuration
+        drifts apart in silence. Which one it picks is measured rather than
+        assumed, and `prefer` overrides it (see devices/discovery.py).
         """
-        found = []
+        found: list[PlutoDevice] = []
         if not HAVE_ADI:
             return found
-        for uri in uris:
-            try:
-                dev = cls(uri)
-                dev.connect()
-                found.append(dev)
-                break
-            except Exception:  # noqa: BLE001 - absent hardware is expected
+        probes = discovery.survey(
+            discovery.candidate_uris(tuple(uris), book=tuple(book)),
+            measure=measure)
+        for board in discovery.group_boards(probes):
+            uris_in_board = {t["uri"] for t in board["transports"]}
+            pick = discovery.choose(
+                [p for p in probes if p.uri in uris_in_board], prefer=prefer)
+            if not pick.get("uri"):
                 continue
+            try:
+                dev = cls(pick["uri"])
+                dev.connect()
+            except Exception:  # noqa: BLE001 - a transport can vanish between
+                continue       # the probe and the open; try the next board
+            dev.discovery = {**pick, "alternatives": board["transports"],
+                             "identified_by": board["identified_by"]}
+            if board.get("note"):
+                dev.discovery["note"] = board["note"]
+            found.append(dev)
         return found
 
     # -- capability detection (FR-DEV-002) ----------------------------------

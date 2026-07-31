@@ -6,6 +6,8 @@ Run with:  uvicorn forge_vision.server.app:app --port 8347
 from __future__ import annotations
 
 import asyncio
+import logging
+from contextlib import asynccontextmanager
 import os
 import tempfile
 
@@ -19,8 +21,28 @@ from ..safety import SafetyViolation
 from . import schemas as S
 from .runtime import Runtime
 
+log = logging.getLogger("forge_vision.server")
+
 runtime = Runtime()
-app = FastAPI(title="Forge Vision", version="0.3.0")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Bring the instrument to a safe stop when the service stops.
+
+    Without this, stopping the server was the process vanishing while a radio
+    could still be keyed and a survey still sweeping. This does not survive a
+    host failure — only a hardware TX watchdog does — but it covers the
+    ordinary stop and restart (FR-SAF-003).
+    """
+    yield
+    try:
+        runtime.shutdown("application shutdown")
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        log.exception("error during runtime shutdown")
+
+
+app = FastAPI(title="Forge Vision", version="0.3.0", lifespan=lifespan)
 
 
 def _fail(exc: Exception) -> HTTPException:
@@ -41,8 +63,68 @@ def status():
 # -- devices -----------------------------------------------------------------
 @app.post("/api/devices/rescan")
 def rescan(body: S.RescanRequest = S.RescanRequest()):
-    """Probe for hardware without restarting; optional explicit URI."""
-    return runtime.rescan_hardware(body.uri)
+    """Probe for hardware without restarting.
+
+    Surveys every candidate transport, groups those that are the same physical
+    radio, and registers the fastest — one entry per board. `prefer` overrides
+    the choice; `uri` skips the survey and opens exactly that transport.
+    """
+    return runtime.rescan_hardware(body.uri, prefer=body.prefer,
+                                   measure=body.measure)
+
+
+@app.get("/api/devices/transports")
+def device_transports(measure: bool = True):
+    """Every way into every reachable radio, measured, registering nothing."""
+    return runtime.survey_transports(measure=measure)
+
+
+@app.get("/api/radios")
+def radio_addresses():
+    """Saved radio addresses, editable without touching a config file."""
+    return runtime.list_radio_addresses()
+
+
+@app.post("/api/radios")
+def add_radio_address(body: S.RadioAddressRequest):
+    try:
+        return runtime.add_radio_address(body.address, label=body.label)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/radios/{radio_id}/update")
+def update_radio_address(radio_id: str, body: S.RadioAddressUpdateRequest):
+    try:
+        return runtime.update_radio_address(radio_id, body.model_dump(exclude_none=True))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/radios/{radio_id}/delete")
+def remove_radio_address(radio_id: str):
+    try:
+        return runtime.remove_radio_address(radio_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/devices/{device_id}/forget")
+def forget_device(device_id: str):
+    """Drop a radio from this session. The next scan will find it again."""
+    try:
+        return runtime.forget_device(device_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/devices/{device_id}/switch_transport")
+def switch_transport(device_id: str, body: S.SwitchTransportRequest):
+    """Reach the same radio over a different transport."""
+    try:
+        return runtime.switch_transport(device_id, body.uri)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
 
 
 @app.post("/api/devices/{device_id}/connect")
@@ -81,10 +163,15 @@ def set_tx(device_id: str, body: S.TxRequest):
 @app.post("/api/safety/arm")
 def arm(body: S.ArmRequest):
     try:
-        runtime.safety.arm(body.operator, body.acknowledgement)
-        return runtime.safety.status()
+        return runtime.arm(body.operator, body.acknowledgement)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
+
+
+@app.post("/api/safety/resume")
+def resume_acquisition():
+    """Lift the latch left by an emergency stop."""
+    return runtime.resume_acquisition()
 
 
 @app.post("/api/safety/disarm")
@@ -134,12 +221,10 @@ def audit(n: int = 200):
 
 @app.post("/api/safety/profile")
 def set_profile(body: S.ProfileRequest):
-    name = body.profile
-    if name not in runtime.safety.limits.frequency_profiles:
-        raise HTTPException(404, f"unknown frequency profile: {name}")
-    runtime.safety.limits.active_profile = name
-    runtime.safety.audit("frequency_profile_changed", profile=name)
-    return runtime.safety.status()
+    try:
+        return runtime.set_frequency_profile(body.profile)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
 
 
 # -- jobs (FR-API-003) --------------------------------------------------------
@@ -197,6 +282,54 @@ def set_rf_chain(body: S.RfChainRequest):
         raise _fail(exc)
 
 
+# -- saved chain configurations (FR-RFC-006) ----------------------------------
+@app.get("/api/chains")
+def chain_configs():
+    """Saved antenna/cable configurations; one is active."""
+    return runtime.list_chain_configs()
+
+
+@app.post("/api/chains")
+def save_chain_config(body: S.ChainConfigRequest):
+    """Save the working chain under a name and make it active."""
+    try:
+        return runtime.save_chain_config(body.name, notes=body.notes)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/chains/detach")
+def detach_chain_config():
+    """Work from an unsaved chain instead of a named configuration."""
+    return runtime.detach_chain_config()
+
+
+@app.get("/api/chains/{config_id}")
+def chain_config(config_id: str):
+    """A configuration plus every measurement taken with it."""
+    try:
+        return runtime.chain_config_measurements(config_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/chains/{config_id}/activate")
+def activate_chain_config(config_id: str):
+    """Make this configuration the baseline for subsequent work."""
+    try:
+        return runtime.activate_chain_config(config_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/chains/{config_id}/delete")
+def delete_chain_config(config_id: str):
+    try:
+        return runtime.delete_chain_config(config_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- receive-path protection (FR-SAF-005/006) ---------------------------------
 @app.get("/api/safety/rx_protection")
 def rx_protection(device_id: str = "sim-pluto-0"):
@@ -210,7 +343,7 @@ def rx_protection(device_id: str = "sim-pluto-0"):
 @app.post("/api/safety/path_attenuation")
 def path_attenuation(body: S.PathAttenuationRequest):
     try:
-        return runtime.safety.declare_path_attenuation(body.attenuation_db)
+        return runtime.declare_path_attenuation(body.attenuation_db)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 
@@ -626,6 +759,15 @@ def delete_component(comp_id: str):
         raise _fail(exc)
 
 
+@app.post("/api/components/{comp_id}/adopt_loss")
+def adopt_measured_loss(comp_id: str, body: S.AdoptLossRequest = S.AdoptLossRequest()):
+    """Set nominal loss from a two-port sweep already imported (FR-RFC-004)."""
+    try:
+        return runtime.components.adopt_measured_loss(comp_id, body.freq_hz)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 @app.post("/api/components/{comp_id}/vna")
 async def import_vna(comp_id: str, file: UploadFile):
     """Import a NanoVNA touchstone (.s1p/.s2p) measurement (FR-RFC-003)."""
@@ -665,8 +807,26 @@ async def live(ws: WebSocket, device_id: str = Query("sim-pluto-0"),
     await ws.accept()
     interval = 1.0 / max(0.5, min(fps, 15.0))
     loop = asyncio.get_event_loop()
+
+    # A client that goes away — tab closed, page navigated, laptop asleep — is
+    # otherwise only noticed when a send finally fails, which can take a long
+    # time or never. Until then the handler keeps asking the radio for frames,
+    # and because only one caller at a time may hold the device, stale streams
+    # pile up and starve the live one. Watch for the disconnect directly.
+    async def watch_for_disconnect():
+        try:
+            while True:
+                await ws.receive()
+        except Exception:  # noqa: BLE001 - any failure here means "gone"
+            return
+
+    watcher = asyncio.create_task(watch_for_disconnect())
     try:
-        while True:
+        while not watcher.done():
+            if runtime.stop_acquisition.is_set():
+                await ws.send_json({"error": "acquisition stopped",
+                                    "device_id": device_id, "fatal": True})
+                break
             dev = runtime.devices.get(device_id)
             if dev is None or not dev.connected:
                 await ws.send_json({"error": "device not connected",
@@ -680,12 +840,24 @@ async def live(ws: WebSocket, device_id: str = Query("sim-pluto-0"),
             await asyncio.sleep(interval)
     except WebSocketDisconnect:
         pass
-    except Exception:  # noqa: BLE001 - a dying stream must not leave TX on
+    except Exception as exc:  # noqa: BLE001 - a dying stream must not leave TX on
+        # Never silently. A stream that stops without saying why leaves the
+        # operator staring at a frozen waterfall with nothing to act on.
+        log.exception("live stream for %s failed", device_id)
+        runtime.safety.audit("live_stream_fault", device=device_id,
+                             error=f"{type(exc).__name__}: {exc}")
+        try:
+            await ws.send_json({"error": f"{type(exc).__name__}: {exc}",
+                                "device_id": device_id, "fatal": True})
+        except Exception:  # noqa: BLE001 - the client may already be gone
+            pass
         for dev in runtime.devices.values():
             if dev.tx_enabled:
                 dev.force_tx_off()
                 runtime.safety.notify_tx_stopped(dev.device_id,
                                                  reason="live_stream_fault")
+    finally:
+        watcher.cancel()
 
 
 # -- static UI ---------------------------------------------------------------

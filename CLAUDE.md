@@ -12,7 +12,7 @@ to that document — keep citing them, it is how coverage is tracked.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
-.venv/bin/python -m pytest tests/          # ~190 tests, ~75 s
+.venv/bin/python -m pytest tests/          # ~265 tests, ~3 min
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
@@ -42,10 +42,19 @@ enforced by tests. Breaking one is a defect even if everything still passes.
 4. **Raw data is immutable.** Finalized experiments refuse new segments;
    derived products are separate artifacts carrying stage versions and
    parameters.
-5. **Transmit is gated.** Every TX path runs through `SafetyController`, is
-   bracketed by `try/finally`, and is enforced for physical radios only —
-   a simulated receiver cannot be damaged, so the interlock records rather than
-   refuses there. Do not add a TX path that bypasses this.
+5. **Transmit is gated, and the gate belongs to a configuration.** Every TX
+   path runs through `SafetyController`, is bracketed by `try/finally`, and
+   RX-protection is enforced for physical radios only — a simulated receiver
+   cannot be damaged, so the interlock records rather than refuses there.
+   Permission is granted against a *fingerprint* of the approved setup
+   (frequency, occupied span, waveform, gains, rate, profile, declared path),
+   so changing any of those withdraws it and forces TX off. The whole occupied
+   band is checked, not the centre frequency: a 56 MHz sweep centred in a
+   26 MHz allocation is legal at its midpoint and illegal either side of it.
+   This paragraph used to claim every TX path was gated while `configure()`
+   bypassed the interlock entirely — TX gain could go from −30 dB to 0 dB, or
+   the radio be walked outside the active profile, mid-transmission. Do not
+   add a TX path that bypasses this, and do not weaken the fingerprint.
 6. **SAGE may not assert without evidence.** `Fact` raises
    `UngroundedStatement` at construction if a non-`unknown` statement has no
    evidence links. LLM narration is checked for invented numbers and withheld
@@ -69,17 +78,53 @@ positioning.py  manual / survey-wheel / replay position sources
 
 ## Hardware notes that cost time to learn
 
-- The bench radio reports as a stock **PlutoSDR Rev.B**, has an SD slot, and is
-  almost certainly a Pluto+ running stock ADI firmware.
-- It was unlocked to **AD9364** (70 MHz – 6 GHz) via `fw_setenv compatible
-  ad9364`. Setting `compatible=ad9361` on a non-Rev.C model string is silently
-  downgraded to `ad9363a` by the boot script — that trap cost an evening.
-- The driver **advertises** a 46.875 MHz tuning floor but rejects anything below
-  70 MHz. Capability detection probes the edge rather than trusting the
-  advertised value.
-- A Pluto cannot stream at full rate; captures are single DMA bursts.
-- Only one handle may claim the USB interface. `connect()` is idempotent, and
-  `usb:` and `ip:192.168.2.1` are the same board.
+- The bench radio is a **Pluto+**. Since the 2026-07-30 reflash it reports as
+  **PlutoSDR Rev.C (Z7010-AD9364)**, `fw_version v0.33-3-gd382-dirty`, kernel
+  5.4.0, on-device libiio 0.21. It previously reported Rev.B with kernel 6.1
+  and libiio 0.26 — if you see Rev.B, the older firmware is back.
+- It runs as **AD9364** (`ad9361-phy,model: ad9364`), 1R1T: `cf-ad9361-lpc`
+  has two channels, which is I/Q of a single receiver, not two receivers.
+  Earlier firmware needed `fw_setenv compatible ad9364`; setting
+  `compatible=ad9361` on a non-Rev.C model string was silently downgraded to
+  `ad9363a` by the boot script, which cost an evening. The model string is now
+  Rev.C, so that particular trap no longer applies.
+- Tuning is **70 MHz – 6 GHz**. The current firmware advertises
+  `[70000000 1 6000000000]` honestly; the older one advertised a 46.875 MHz
+  floor and then rejected anything below 70 MHz. Capability detection still
+  probes the edge rather than trusting the advertised value — cheap, and it
+  is what caught the old lie.
+- A Pluto cannot stream at full rate; captures are single DMA bursts. Measured
+  sustained buffer throughput, 16 MB reads:
+
+  | transport | throughput | sustained | live frames |
+  |---|---|---|---|
+  | `ip:<LAN address>` (Ethernet) | 52.6 MB/s | 13.2 MSPS | **11.8 fps** |
+  | `usb:` | 28.3 MB/s | 7.1 MSPS | 5.9 fps |
+  | `ip:192.168.2.1` (USB gadget) | 21.3 MB/s | 5.3 MSPS | — |
+
+  Only one handle may claim the **USB** interface (`connect()` is idempotent);
+  the network backends are not exclusive, so diagnostics can run alongside a
+  deployment. Discovery measures each transport and picks the fastest rather
+  than assuming — see `devices/discovery.py`. Site-specific addresses go in
+  `FORGE_VISION_PLUTO_URIS`; `prefer` on `/api/devices/rescan` overrides the
+  choice, and an override that cannot be met is reported, not silently
+  swapped.
+- The Ethernet port has a **static address, 192.168.99.222** (`ipaddr_eth` in
+  the `[USB_ETHERNET]` section of `config.txt` on the board's FAT16 partition).
+  To change it: mount `/dev/sda1`, edit `config.txt` — it is **CRLF**, so a
+  `sed` pattern anchored with `$` silently matches nothing — set
+  `[ACTIONS] reset = 1`, then send a real **SCSI eject** (`eject /dev/sda`).
+  A plain `umount` is not enough; the firmware only re-reads the file on a
+  medium-removal event, and clears the reset flag itself after rebooting.
+- **`usb:`, `ip:192.168.99.222` and `ip:192.168.2.1` are all the same board.**
+  Verified by writing the LO on one and reading it on another. Registering the
+  radio twice gives two device entries with independent cached configs that
+  silently diverge — observed one entry reporting 923 MHz while the other and
+  the hardware were at 1090 MHz. A capture taken through the stale entry would
+  record an RF config the radio never had. Register one URI, not two.
+- Reflashing re-enumerates the board, which invalidates any open USB handle.
+  The adapter keeps reporting `connected: true`; the tell is that `health`
+  loses its `temperature_c` field. Disconnect and reconnect to recover.
 
 ## Gotchas
 

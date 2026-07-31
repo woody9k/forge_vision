@@ -31,8 +31,32 @@ class Strict(BaseModel):
 
 # -- devices ----------------------------------------------------------------
 class RescanRequest(Strict):
-    uri: str = Field("", description="Explicit URI such as ip:192.168.1.87; "
-                                     "empty probes the default transports")
+    uri: str = Field("", description="Exact URI to open, e.g. ip:192.168.99.222. "
+                                     "Bypasses the survey entirely.")
+    prefer: str = Field("auto", pattern="^(auto|usb|network|usb-gadget|ip:.*|usb:.*)$",
+                        description="Which transport to choose when surveying: "
+                                    "auto (fastest measured), a kind, or a URI")
+    measure: bool = Field(True, description="Time each transport before choosing. "
+                                            "Set false for a faster, unmeasured scan.")
+
+
+class RadioAddressRequest(Strict):
+    """Where a radio lives, in whatever form a person would type it."""
+    address: str = Field(..., min_length=1,
+                         description="Hostname or IP (ip: prefix optional), "
+                                     "or an explicit usb: URI")
+    label: str = ""
+
+
+class RadioAddressUpdateRequest(Strict):
+    label: str | None = None
+    address: str | None = None
+    enabled: bool | None = None
+
+
+class SwitchTransportRequest(Strict):
+    """Reach the same radio a different way."""
+    uri: str = Field(..., min_length=1)
 
 
 class DeviceConfigRequest(Strict):
@@ -211,6 +235,17 @@ class RfChainRequest(Strict):
     rx_ids: list[str] = Field(default_factory=list)
     antenna_tx: str = ""
     antenna_rx: str = ""
+
+
+class AdoptLossRequest(Strict):
+    """Take nominal loss from an imported S21 sweep, at a stated frequency."""
+    freq_hz: float | None = Field(None, gt=0)
+
+
+class ChainConfigRequest(Strict):
+    """Save the working chain as a reusable named configuration."""
+    name: str = Field(min_length=1)
+    notes: str = ""
 
 
 class ComponentRequest(Strict):

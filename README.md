@@ -4,16 +4,30 @@ Software-defined RF perception and subsurface imaging platform, implementing
 the **Forge Vision Platform Requirements v0.1** (see
 `Forge_Vision_Platform_Requirements_v0.1.docx`).
 
-This build covers roadmap releases **0.1 RF Bench** through **0.5 SAGE
-Perception**: reliable device control and raw capture, calibrated FMCW range
-profiles with confidence-aware peak detection, position-indexed B-scan
-imaging, migration and cross-scan fusion into world coordinates, and a
-grounded assistant over the stored evidence — all on top of the
-experiment/provenance system the spec requires.
+Software for roadmap releases **0.1 RF Bench** through **0.5 SAGE Perception**
+is implemented: device control and raw capture, calibrated FMCW range profiles
+with confidence-aware peak detection, position-indexed B-scan imaging,
+migration and cross-scan fusion into world coordinates, and a grounded
+assistant over the stored evidence — on top of the experiment/provenance
+system the spec requires.
 
-Releases 0.6 (portable field system) and 1.0 (validated platform) are not
-started. Nothing has ever transmitted: the receive path is verified against
-real hardware, the transmit path is exercised only in simulation.
+**Implemented is not validated.** Most of that has only ever run against the
+simulator. What has been exercised on a real Pluto+ is the receive path:
+capture, band survey, transport selection, and the safety interlocks.
+
+| Area | Maturity |
+|---|---|
+| Receive path, raw capture, band survey | bench validated |
+| Device discovery, transport selection, chain provenance | bench validated |
+| Safety interlocks, TX authorization, emergency stop | bench validated (never keyed) |
+| FMCW range profiles, stepped-frequency synthesis | simulator validated |
+| B-scan, migration, site fusion, Scene Builder, SAGE | implemented, simulator only |
+| Bistatic geometry, coherent phase reference | not implemented |
+| 0.6 portable field system, 1.0 validated platform | not started |
+
+**Nothing has ever transmitted on this bench.** Treat any transmit-derived
+figure — including the stepped-frequency resolution results — as a simulation
+result until it has been measured against hardware.
 
 ## Documentation
 
@@ -216,9 +230,20 @@ Bench safety notes: start with the `bench_cabled` frequency profile, keep TX
 gain at the -30 dB default, and run the attenuated loopback experiment
 (REF-01, 30–40 dB inline attenuation TX→RX) before any antenna work.
 
-## Not yet implemented (per roadmap)
+## Not yet implemented
 
-Releases 0.4–1.0: world-view site mapping, multi-pass registration, SAGE AI
-assistance, Jetson portable deployment, and the C-scan/volumetric imaging
-extensions. The data model and adapter contracts were built so these bolt on
-without reworking the experiment or device layers.
+- **Bistatic geometry.** Imaging assumes TX and RX are co-located; the real
+  path is TX→target plus target→RX. This matters as soon as two antennas are
+  physically separated.
+- **Coherent phase reference.** A second receive channel used as a hardware
+  reference is the route to usable synthetic bandwidth, and the current board
+  runs as a 1R1T AD9364.
+- **Raw retention for stepped sweeps.** Only the stitched profile is stored, so
+  a stepped run cannot yet be independently reprocessed.
+- **Persistent calibration.** Calibration state is in memory and does not
+  survive a restart.
+- **Release 0.6** (Jetson portable field system) and **1.0** (validated
+  platform), including C-scan/volumetric extensions.
+
+The data model and adapter contracts were built so these bolt on without
+reworking the experiment or device layers.

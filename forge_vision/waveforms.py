@@ -69,6 +69,19 @@ class Waveform:
             "chirp_rate_hz_per_s": self.chirp_rate,
         }
 
+    def occupied_range(self, center_frequency_hz: float) -> tuple | None:
+        """Lowest and highest frequency this waveform actually puts on air.
+
+        Checking only the centre frequency is not a band check: a 56 MHz sweep
+        centred inside a 26 MHz ISM allocation is legal at its centre and
+        illegal across most of its span. Returns None for a waveform that never
+        transmits, which has no occupied range to constrain (FR-SAF-004).
+        """
+        if self.kind == "rx_only":
+            return None
+        half = max(self.bandwidth_hz, 0.0) / 2.0
+        return (center_frequency_hz - half, center_frequency_hz + half)
+
     def validate(self, capabilities) -> list[str]:
         """Return a list of violations against device capabilities (FR-WAV-004)."""
         problems = []

@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785422409.7031605,
+    "time": 1785502314.2911015,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -92,19 +92,21 @@ Platform state: devices, safety, storage, waveforms.
     "fmcw_pluto_40M",
     "fmcw_narrow_20M",
     "... 6 total"
-   ]
+   ],
+   "link": {
+    "uri": "",
+    "kind": "simulated",
+    "address": "",
+    "throughput_mb_s": null,
+    "chosen_because": "",
+    "alternatives": []
+   }
   },
   {
-   "device_id": "pluto-usb:",
+   "device_id": "pluto-ip:pluto.boblab.net",
    "kind": "pluto",
    "connected": true,
-   "tx_enabled": false,
-   "config": {
-    "center_frequency_hz": 915000000.0,
-    "sample_rate_hz": 61440000.0,
-    "rx_bandwidth_hz": 56000000.0,
-    "rx_gain_db": 40.0,
-    "tx
+   "tx_e
 ```
 
 ### `GET /api/experiments`
@@ -114,55 +116,57 @@ Experiment index. Filter with ?query=, ?tag=, ?kind=.
 ```json
 [
  {
-  "experiment_id": "20260729-231057-b15557",
-  "name": "low VHF/UHF survey after AD9364 unlock",
-  "objective": "receive-only occupancy survey 70.0-330.0 MHz",
-  "owner": "",
-  "tags": [],
-  "kind": "survey",
-  "started_at": 1785381057.2250009,
-  "ended_at": 1785381086.6461349,
-  "status": "finalized",
-  "num_segments": 0,
-  "derived": [
-   "band_survey"
-  ],
-  "device": "pluto-usb:",
-  "parent": null
- },
- {
-  "experiment_id": "20260729-230824-8ca7f0",
-  "name": "low VHF/UHF survey after AD9364 unlock",
-  "objective": "receive-only occupancy survey 46.9-330.0 MHz",
-  "owner": "",
-  "tags": [],
-  "kind": "survey",
-  "started_at": 1785380904.3921075,
-  "ended_at": null,
-  "status": "in_progress",
-  "num_segments": 0,
-  "derived": [],
-  "device": "pluto-usb:",
-  "parent": null
- },
- {
-  "experiment_id": "20260729-181324-ce39e4",
+  "experiment_id": "20260730-182539-06cf7e",
   "name": "band survey",
-  "objective": "receive-only occupancy survey 400.0-3000.0 MHz",
+  "objective": "receive-only occupancy survey 902.0-928.0 MHz",
   "owner": "",
   "tags": [],
   "kind": "survey",
-  "started_at": 1785363204.3423555,
-  "ended_at": 1785363205.2740297,
+  "started_at": 1785450339.5909677,
+  "ended_at": 1785450348.3669384,
   "status": "finalized",
   "num_segments": 0,
   "derived": [
    "band_survey"
   ],
-  "device": "sim-pluto-0",
+  "device": "pluto-usb:",
   "parent": null
  },
- "... 20 total"
+ {
+  "experiment_id": "20260730-133232-c9712a",
+  "name": "after repatch",
+  "objective": "receive-only occupancy survey 2400.0-2450.0 MHz",
+  "owner": "",
+  "tags": [],
+  "kind": "survey",
+  "started_at": 1785432752.3690584,
+  "ended_at": 1785432755.1448505,
+  "status": "finalized",
+  "num_segments": 0,
+  "derived": [
+   "band_survey"
+  ],
+  "device": "pluto-usb:",
+  "parent": null
+ },
+ {
+  "experiment_id": "20260730-133229-ddf51c",
+  "name": "WiFi band check via LPDA",
+  "objective": "receive-only occupancy survey 2400.0-2450.0 MHz",
+  "owner": "",
+  "tags": [],
+  "kind": "survey",
+  "started_at": 1785432749.6517832,
+  "ended_at": 1785432752.357948,
+  "status": "finalized",
+  "num_segments": 0,
+  "derived": [
+   "band_survey"
+  ],
+  "device": "pluto-usb:",
+  "parent": null
+ },
+ "... 24 total"
 ]
 ```
 
@@ -230,15 +234,26 @@ RF component inventory.
   ]
  },
  {
-  "component_id": "abecc2b819",
+  "component_id": "1baed4307e",
   "kind": "antenna",
-  "name": "telescoping whip (RX1)",
-  "connector": "SMA",
-  "claimed_band": "~80-375 MHz when extended (quarter-wave)",
-  "polarization": "linear, vertical when upright",
-  "created_at": 1785380891.2832947,
+  "name": "blue triangle long periodic",
+  "connector": "",
+  "claimed_band": "",
+  "polarization": "",
+  "created_at": 1785428616.7621756,
   "has_vna": false
- }
+ },
+ {
+  "component_id": "2205b245a2",
+  "kind": "cable",
+  "name": "long skinny cable",
+  "connector": "",
+  "claimed_band": "",
+  "polarization": "",
+  "created_at": 1785428596.1889236,
+  "has_vna": false
+ },
+ "... 4 total"
 ]
 ```
 
@@ -261,7 +276,15 @@ Declared cable/adapter chain, recorded with every experiment.
   "antenna_rx": "",
   "total_loss_db": 0.0,
   "total_delay_ns": 0.0,
-  "components_without_characterisation": []
+  "components_without_characterisation": [],
+  "band": {
+   "usable_bands": [],
+   "measured_components": [],
+   "unverified_components": [],
+   "note": "No component in this chain has a VNA measurement, so its usable band is unknown."
+  },
+  "config_id": "",
+  "config_name": ""
  }
 }
 ```
@@ -368,7 +391,7 @@ Configured narration endpoints.
     "google/gemma-4-e4b",
     "... 4 total"
    ],
-   "latency_s": 0.02,
+   "latency_s": 0.0,
    "error": ""
   }
  }
@@ -379,155 +402,324 @@ Configured narration endpoints.
 
 ## Request bodies
 
-FastAPI cannot advertise these because the handlers accept an
-untyped object, so they are documented here.
+Generated from the declared request models, so this cannot drift
+from what the server actually accepts. Every body rejects unknown
+fields: a misspelled key is a 422, not a silent default.
 
-### `/api/components`
+### `POST /api/calibration/{device_id}/background`
 
-| field | meaning |
-|---|---|
-| `kind` | antenna|cable|adapter|attenuator|filter|... |
-| `name` | str |
-| `connector` | str |
-| `claimed_band` | str |
-| `nominal_loss_db` | float |
-| `nominal_delay_ns` | float |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `waveform` | string | no | `"fmcw_bench_56M"` |  |
+| `chirps` | integer (> 0.0) | no | `8` |  |
+| `operator` | string | no | `""` |  |
 
-### `/api/devices/{device_id}/configure`
+### `POST /api/calibration/{device_id}/cable_delay`
 
-| field | meaning |
-|---|---|
-| `center_frequency_hz` | float |
-| `sample_rate_hz` | float |
-| `rx_bandwidth_hz` | float |
-| `rx_gain_db` | float |
-| `tx_gain_db` | float |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `delay_s` | number | no | `0.0` |  |
 
-### `/api/jobs`
+### `POST /api/capture`
 
-| field | meaning |
-|---|---|
-| `kind` | 'survey' | 'site_scene' | 'replay' |
-| `params` | object, the arguments for that job kind |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `device_id` | string | no | `"sim-pluto-0"` |  |
+| `num_samples` | integer (> 0.0) | no | `262144` |  |
+| `segments` | integer (> 0.0) | no | `1` |  |
+| `name` | string | no | `"raw capture"` |  |
+| `operator` | string | no | `""` |  |
+| `waveform` | string | no | `""` |  |
+| `tags` | list of string | no | — |  |
 
-### `/api/llm`
+### `POST /api/chains`
 
-| field | meaning |
-|---|---|
-| `name` | str |
-| `base_url` | str ending in /v1 |
-| `model` | str |
-| `api_key` | str |
-| `max_tokens` | int |
-| `enabled` | bool |
+Save the working chain as a reusable named configuration.
 
-### `/api/position/source`
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `name` | string (at least 1 character(s)) | yes | — |  |
+| `notes` | string | no | `""` |  |
 
-| field | meaning |
-|---|---|
-| `kind` | 'manual' | 'serial' | 'replay' |
-| `port` | str (serial) |
-| `baud` | int (serial) |
-| `wheel_circumference_m` | float (serial) |
-| `counts_per_revolution` | int (serial) |
-| `samples` | list[object] (replay) |
+### `POST /api/components`
 
-### `/api/range/run`
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `kind` | string | no | `"antenna"` |  |
+| `name` | string (at least 1 character(s)) | yes | — |  |
+| `connector` | string | no | `""` |  |
+| `claimed_band` | string | no | `""` |  |
+| `polarization` | string | no | `""` |  |
+| `notes` | string | no | `""` |  |
+| `nominal_loss_db` | number | no | — |  |
+| `nominal_delay_ns` | number | no | — |  |
 
-| field | meaning |
-|---|---|
-| `device_id` | str, default 'sim-pluto-0' |
-| `waveform` | str, must be in the device's compatible_waveforms |
-| `chirps` | int, coherent averages (default 8) |
-| `medium` | str preset ('air','soil_dry','soil_moist',...) or object with epsilon_r |
-| `use_background` | bool, subtract the stored background (default true) |
-| `name` | str |
-| `tags` | list[str] |
-| `operator` | str |
-| `pipeline_overrides` | object, per-stage DSP parameter overrides |
+### `POST /api/components/{comp_id}/adopt_loss`
 
-### `/api/rf_chain`
+Take nominal loss from an imported S21 sweep, at a stated frequency.
 
-| field | meaning |
-|---|---|
-| `tx_ids` | list[str] |
-| `rx_ids` | list[str] |
-| `antenna_tx` | str |
-| `antenna_rx` | str |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `freq_hz` | number (> 0.0) | no | — |  |
 
-### `/api/safety/arm`
+### `POST /api/components/{comp_id}/update`
 
-| field | meaning |
-|---|---|
-| `operator` | str |
-| `acknowledgement` | str |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `name` | string | no | — |  |
+| `connector` | string | no | — |  |
+| `claimed_band` | string | no | — |  |
+| `polarization` | string | no | — |  |
+| `notes` | string | no | — |  |
+| `nominal_loss_db` | number | no | — |  |
+| `nominal_delay_ns` | number | no | — |  |
 
-### `/api/safety/path_attenuation`
+### `POST /api/devices/rescan`
 
-| field | meaning |
-|---|---|
-| `attenuation_db` | float |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `uri` | string | no | `""` | Exact URI to open, e.g. ip:192.168.99.222. Bypasses the survey entirely. |
+| `prefer` | string matching `^(auto|usb|network|usb-gadget|ip:.*|usb:.*)$` | no | `"auto"` | Which transport to choose when surveying: auto (fastest measured), a kind, or a URI |
+| `measure` | boolean | no | `true` | Time each transport before choosing. Set false for a faster, unmeasured scan. |
 
-### `/api/sage/ask`
+### `POST /api/devices/{device_id}/configure`
 
-| field | meaning |
-|---|---|
-| `question` | str |
-| `site_id` | str, optional context |
-| `experiment_id` | str, optional context |
-| `narrate` | bool, default false — narration is fetched separately |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `center_frequency_hz` | number | no | — |  |
+| `sample_rate_hz` | number | no | — |  |
+| `rx_bandwidth_hz` | number | no | — |  |
+| `rx_gain_db` | number | no | — |  |
+| `tx_gain_db` | number | no | — |  |
+| `rx_channel` | integer | no | — |  |
+| `tx_channel` | integer | no | — |  |
+| `buffer_size` | integer | no | — |  |
 
-### `/api/scan/start`
+### `POST /api/devices/{device_id}/switch_transport`
 
-| field | meaning |
-|---|---|
-| `device_id` | str |
-| `plan` | object: start_m, end_m, step_m, waveform, chirps, medium, antenna_height_m, position_uncertainty_m, max_range_m, notes |
+Reach the same radio a different way.
 
-### `/api/scan/{scan_id}/point`
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `uri` | string (at least 1 character(s)) | yes | — |  |
 
-| field | meaning |
-|---|---|
-| `x_m` | float, or omit entirely to take the position from the active source |
-| `operator_override` | bool, accept a point that failed the quality gate |
+### `POST /api/devices/{device_id}/tx`
 
-### `/api/sites/{site_id}/register`
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `enable` | boolean | yes | — |  |
+| `waveform` | string | no | `""` | Required when enable is true |
 
-| field | meaning |
-|---|---|
-| `experiment_id` | str, a finalized scan |
-| `origin_x_m` | float |
-| `origin_y_m` | float |
-| `heading_deg` | float, CCW from +x |
-| `label` | str |
-| `position_uncertainty_m` | float |
+### `POST /api/experiments/{exp_id}/annotate`
 
-### `/api/stepped/run`
+Annotations are free-form by design: an operator's note should never be
+rejected for using a field the schema did not anticipate.
 
-| field | meaning |
-|---|---|
-| `device_id` | str |
-| `start_hz` | float |
-| `stop_hz` | float |
-| `waveform` | str, the FMCW chunk waveform (default fmcw_pluto_40M) |
-| `overlap` | float in [0,1), chunk overlap used to solve PLL phase steps |
-| `chirps` | int |
-| `medium` | str or object |
-| `correction` | 'overlap' (default) or 'none' |
-| `max_range_m` | float |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `type` | string | no | `"note"` |  |
+| `text` | string | no | `""` |  |
 
-### `/api/survey`
+### `POST /api/experiments/{exp_id}/replay`
 
-| field | meaning |
-|---|---|
-| `device_id` | str |
-| `start_hz` | float |
-| `stop_hz` | float |
-| `step_hz` | float |
-| `sample_rate_hz` | float |
-| `rx_gain_db` | float |
-| `samples` | int |
-| `name` | str |
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `medium` | string or object | no | — |  |
+| `pipeline_overrides` | object | no | — |  |
+
+### `POST /api/jobs`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `kind` | string matching `^(survey|site_scene|replay)$` | yes | — |  |
+| `params` | object | no | — |  |
+
+### `POST /api/llm`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `name` | string (at least 1 character(s)) | yes | — |  |
+| `base_url` | string (at least 1 character(s)) | yes | — |  |
+| `model` | string | no | `""` |  |
+| `api_key` | string | no | `""` |  |
+| `timeout_s` | number (> 0.0) | no | `60.0` |  |
+| `max_tokens` | integer (> 0.0) | no | `700` |  |
+| `enabled` | boolean | no | `false` |  |
+
+### `POST /api/position/source`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `kind` | string matching `^(manual|serial|replay)$` | no | `"manual"` |  |
+| `port` | string | no | `""` |  |
+| `baud` | integer | no | `115200` |  |
+| `wheel_circumference_m` | number (>= 0.0) | no | `0.0` |  |
+| `counts_per_revolution` | integer (>= 0.0) | no | `0` |  |
+| `uncertainty_m` | number (>= 0.0) | no | `0.01` |  |
+| `samples` | list of object | no | — |  |
+
+### `POST /api/radios`
+
+Where a radio lives, in whatever form a person would type it.
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `address` | string (at least 1 character(s)) | yes | — | Hostname or IP (ip: prefix optional), or an explicit usb: URI |
+| `label` | string | no | `""` |  |
+
+### `POST /api/radios/{radio_id}/update`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `label` | string | no | — |  |
+| `address` | string | no | — |  |
+| `enabled` | boolean | no | — |  |
+
+### `POST /api/range/run`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `device_id` | string | no | `"sim-pluto-0"` |  |
+| `waveform` | string | no | `"fmcw_bench_56M"` |  |
+| `chirps` | integer (> 0.0) | no | `8` |  |
+| `medium` | string or object | no | — |  |
+| `use_background` | boolean | no | `true` |  |
+| `name` | string | no | `"range run"` |  |
+| `operator` | string | no | `""` |  |
+| `tags` | list of string | no | — |  |
+| `pipeline_overrides` | object | no | — |  |
+| `parent_id` | string | no | — |  |
+
+### `POST /api/rf_chain`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `tx_ids` | list of string | no | — |  |
+| `rx_ids` | list of string | no | — |  |
+| `antenna_tx` | string | no | `""` |  |
+| `antenna_rx` | string | no | `""` |  |
+
+### `POST /api/safety/arm`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `operator` | string (at least 1 character(s)) | yes | — |  |
+| `acknowledgement` | string (at least 1 character(s)) | yes | — |  |
+
+### `POST /api/safety/checklist`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `id` | string | no | `""` |  |
+| `confirmed` | boolean | no | `true` |  |
+| `reset` | boolean | no | `false` |  |
+
+### `POST /api/safety/path_attenuation`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `attenuation_db` | number (>= 0.0) | yes | — | Attenuation/isolation between TX and RX. A physical claim. |
+
+### `POST /api/safety/profile`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `profile` | string | yes | — |  |
+
+### `POST /api/sage/ask`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `question` | string | no | `""` |  |
+| `site_id` | string | no | `""` |  |
+| `experiment_id` | string | no | `""` |  |
+| `narrate` | boolean | no | `false` |  |
+
+### `POST /api/scan/start`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `device_id` | string | no | `"sim-pluto-0"` |  |
+| `plan` | any | no | — |  |
+| `operator` | string | no | `""` |  |
+
+### `POST /api/scan/{scan_id}/point`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `x_m` | number | no | — | Omit to take the position from the active source |
+| `operator_override` | boolean | no | `false` |  |
+
+### `POST /api/sim/{device_id}/caps`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `profile` | string matching `^(pluto_plus|pluto_rev_b)$` | yes | — |  |
+
+### `POST /api/sim/{device_id}/scene`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `preset` | string | no | `""` |  |
+| `targets` | list of object | no | — |  |
+| `medium` | string or object | no | — |  |
+| `noise_floor_dbfs` | number | no | — |  |
+| `leakage_amplitude` | number | no | — |  |
+
+### `POST /api/sites`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `name` | string (at least 1 character(s)) | yes | — |  |
+| `coordinate_system` | string | no | `""` |  |
+| `notes` | string | no | `""` |  |
+
+### `POST /api/sites/{site_id}/register`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `experiment_id` | string (at least 1 character(s)) | yes | — |  |
+| `origin_x_m` | number | no | `0.0` |  |
+| `origin_y_m` | number | no | `0.0` |  |
+| `heading_deg` | number | no | `0.0` |  |
+| `label` | string | no | `""` |  |
+| `position_uncertainty_m` | number (>= 0.0) | no | `0.05` |  |
+
+### `POST /api/sites/{site_id}/unregister`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `experiment_id` | string (at least 1 character(s)) | yes | — |  |
+
+### `POST /api/stepped/run`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `device_id` | string | no | `"sim-pluto-0"` |  |
+| `start_hz` | number | no | `100000000.0` |  |
+| `stop_hz` | number | no | `500000000.0` |  |
+| `waveform` | string | no | `"fmcw_pluto_40M"` |  |
+| `overlap` | number (>= 0.0, < 1.0) | no | `0.5` |  |
+| `chirps` | integer (> 0.0) | no | `4` |  |
+| `medium` | string or object | no | — |  |
+| `correction` | string matching `^(overlap|none)$` | no | `"overlap"` |  |
+| `max_range_m` | number (> 0.0) | no | `20.0` |  |
+| `name` | string | no | `"stepped-frequency run"` |  |
+| `operator` | string | no | `""` |  |
+
+### `POST /api/survey`
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `device_id` | string | no | `"sim-pluto-0"` |  |
+| `start_hz` | number | no | `902000000.0` |  |
+| `stop_hz` | number | no | `928000000.0` |  |
+| `step_hz` | number (> 0.0) | no | `2000000.0` |  |
+| `sample_rate_hz` | number (> 0.0) | no | `2500000.0` |  |
+| `rx_gain_db` | number | no | `40.0` |  |
+| `samples` | integer (> 0.0) | no | `65536` |  |
+| `name` | string | no | `"band survey"` |  |
+| `operator` | string | no | `""` |  |
 
 ---
 
@@ -539,16 +731,26 @@ untyped object, so they are documented here.
 | POST | `/api/calibration/{device_id}/background` | Background ⚠️ transmits |
 | POST | `/api/calibration/{device_id}/cable_delay` | Cable Delay |
 | POST | `/api/capture` | Capture |
+| GET | `/api/chains` | Chain Configs |
+| POST | `/api/chains` | Save Chain Config |
+| POST | `/api/chains/detach` | Detach Chain Config |
+| GET | `/api/chains/{config_id}` | Chain Config |
+| POST | `/api/chains/{config_id}/activate` | Activate Chain Config |
+| POST | `/api/chains/{config_id}/delete` | Delete Chain Config |
 | GET | `/api/components` | Components |
 | POST | `/api/components` | Create Component |
 | GET | `/api/components/{comp_id}` | Component |
+| POST | `/api/components/{comp_id}/adopt_loss` | Adopt Measured Loss |
 | POST | `/api/components/{comp_id}/delete` | Delete Component |
 | POST | `/api/components/{comp_id}/update` | Update Component |
 | POST | `/api/components/{comp_id}/vna` | Import Vna |
 | POST | `/api/devices/rescan` | Rescan |
+| GET | `/api/devices/transports` | Device Transports |
 | POST | `/api/devices/{device_id}/configure` | Configure |
 | POST | `/api/devices/{device_id}/connect` | Connect |
 | POST | `/api/devices/{device_id}/disconnect` | Disconnect |
+| POST | `/api/devices/{device_id}/forget` | Forget Device |
+| POST | `/api/devices/{device_id}/switch_transport` | Switch Transport |
 | POST | `/api/devices/{device_id}/tx` | Set Tx ⚠️ transmits |
 | GET | `/api/experiments` | Experiments |
 | GET | `/api/experiments/{exp_id}` | Experiment |
@@ -570,6 +772,10 @@ untyped object, so they are documented here.
 | GET | `/api/position` | Position Status |
 | GET | `/api/position/ports` | List Serial Ports |
 | POST | `/api/position/source` | Set Position Source |
+| GET | `/api/radios` | Radio Addresses |
+| POST | `/api/radios` | Add Radio Address |
+| POST | `/api/radios/{radio_id}/delete` | Remove Radio Address |
+| POST | `/api/radios/{radio_id}/update` | Update Radio Address |
 | POST | `/api/range/run` | Range Run ⚠️ transmits |
 | GET | `/api/rf_chain` | Rf Chain |
 | POST | `/api/rf_chain` | Set Rf Chain |
@@ -580,6 +786,7 @@ untyped object, so they are documented here.
 | POST | `/api/safety/disarm` | Disarm ⚠️ safety state |
 | POST | `/api/safety/path_attenuation` | Path Attenuation ⚠️ safety state |
 | POST | `/api/safety/profile` | Set Profile ⚠️ safety state |
+| POST | `/api/safety/resume` | Resume Acquisition |
 | GET | `/api/safety/rx_protection` | Rx Protection |
 | POST | `/api/safety/stop` | Emergency Stop |
 | POST | `/api/sage/ask` | Sage Ask |
