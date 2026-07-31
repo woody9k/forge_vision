@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785469146.371255,
+    "time": 1785472119.8051186,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -106,7 +106,7 @@ Platform state: devices, safety, storage, waveforms.
    "device_id": "pluto-ip:pluto.boblab.net",
    "kind": "pluto",
    "connected": true,
-   "tx_en
+   "tx_e
 ```
 
 ### `GET /api/experiments`
@@ -266,30 +266,25 @@ Declared cable/adapter chain, recorded with every experiment.
  "declared": {
   "tx_ids": [],
   "rx_ids": [],
-  "antenna_tx": "abecc2b819",
-  "antenna_rx": "1baed4307e"
+  "antenna_tx": "",
+  "antenna_rx": ""
  },
  "resolved": {
   "tx_path": [],
   "rx_path": [],
-  "antenna_tx": "abecc2b819",
-  "antenna_rx": "1baed4307e",
+  "antenna_tx": "",
+  "antenna_rx": "",
   "total_loss_db": 0.0,
   "total_delay_ns": 0.0,
   "components_without_characterisation": [],
   "band": {
    "usable_bands": [],
    "measured_components": [],
-   "unverified_components": [
-    "blue triangle long periodic",
-    "telescoping whip (RX1)"
-   ],
+   "unverified_components": [],
    "note": "No component in this chain has a VNA measurement, so its usable band is unknown."
   },
-  "config_id": "83ac246b0b",
-  "config_name": "bench: LPDA + 10ft on RX",
-  "config_modified": true,
-  "note": "Patched chain differs from saved configuration 'bench: LPDA + 10ft on RX'; it is not that configuration."
+  "config_id": "",
+  "config_name": ""
  }
 }
 ```
@@ -569,6 +564,7 @@ untyped object, so they are documented here.
 | POST | `/api/capture` | Capture |
 | GET | `/api/chains` | Chain Configs |
 | POST | `/api/chains` | Save Chain Config |
+| POST | `/api/chains/detach` | Detach Chain Config |
 | GET | `/api/chains/{config_id}` | Chain Config |
 | POST | `/api/chains/{config_id}/activate` | Activate Chain Config |
 | POST | `/api/chains/{config_id}/delete` | Delete Chain Config |

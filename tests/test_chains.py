@@ -209,3 +209,44 @@ def test_config_id_cannot_escape_the_directory(runtime):
         runtime.chains.load("../../etc/passwd")
     with pytest.raises(ValueError, match="invalid configuration id"):
         runtime.chains.load("_working")
+
+
+def test_detaching_stops_the_chain_claiming_a_saved_name(runtime):
+    """Clearing the patching used to leave a chain still reporting itself as a
+    modified version of whatever was last active — true, but it reads as an
+    unresolved fault rather than a fresh start."""
+    rt = runtime
+    ant, cab = _components(rt)
+    rt.set_rf_chain(rx_ids=[cab], antenna_rx=ant)
+    rt.save_chain_config("as-built")
+
+    rt.set_rf_chain(rx_ids=[], antenna_rx="")
+    assert rt.current_chain()["config_modified"] is True
+
+    detached = rt.detach_chain_config()
+    assert detached["config_id"] == ""
+    assert detached["config_name"] == ""
+    assert detached.get("config_modified") is not True
+    # the saved configuration itself is untouched and still reusable
+    assert [c["name"] for c in rt.list_chain_configs()] == ["as-built"]
+
+
+def test_detach_keeps_the_patching(runtime):
+    rt = runtime
+    ant, cab = _components(rt)
+    rt.set_rf_chain(rx_ids=[cab], antenna_rx=ant)
+    rt.save_chain_config("as-built")
+    rt.detach_chain_config()
+    assert rt.rf_chain["antenna_rx"] == ant
+    assert rt.rf_chain["rx_ids"] == [cab]
+
+
+def test_detach_over_the_api(client):
+    ant = client.post("/api/components",
+                      json={"kind": "antenna", "name": "LPDA"}).json()
+    client.post("/api/rf_chain", json={"antenna_rx": ant["component_id"]})
+    client.post("/api/chains", json={"name": "bench"})
+    assert client.get("/api/rf_chain").json()["resolved"]["config_name"] == "bench"
+    r = client.post("/api/chains/detach")
+    assert r.status_code == 200
+    assert r.json()["config_name"] == ""

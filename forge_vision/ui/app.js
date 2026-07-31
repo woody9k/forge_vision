@@ -369,47 +369,169 @@ function renderChainFacts(c) {
   $("chain-badge").innerHTML = badge;
 }
 
-// An RF path is a series of parts in a physical order, so it is edited as an
-// ordered list rather than a multi-select, which cannot express order at all.
-function renderPathEditor(which) {
-  const ids = chainState[`${which}_ids`];
-  const host = $(`path-${which}`);
-  host.innerHTML = ids.map((id, i) => {
-    const c = compById(id);
-    const nm = c ? `${esc(c.kind)}: ${esc(c.name)}` : `<span style="color:var(--warn)">missing (${esc(id)})</span>`;
-    const loss = c && fmtLoss(c);
-    return `<div class="pathrow">
-      <span class="ord">${i + 1}</span>
-      <span class="grow">${nm} <span class="mut">${loss || (c ? "loss unknown" : "")}</span></span>
-      <button onclick="movePath('${which}',${i},-1)"${i === 0 ? " disabled" : ""}>↑</button>
-      <button onclick="movePath('${which}',${i},1)"${i === ids.length - 1 ? " disabled" : ""}>↓</button>
-      <button onclick="dropPath('${which}',${i})">✕</button>
-    </div>`;
-  }).join("") || '<div class="mut" style="padding:4px 0">nothing in this path</div>';
-
-  const pick = $(`add-${which}-pick`);
-  pick.innerHTML = chainComps
-    .filter((c) => c.kind !== "antenna")
-    .map((c) => `<option value="${esc(c.component_id)}">${esc(c.kind)}: ${esc(c.name)}</option>`)
-    .join("") || '<option value="">add components first</option>';
+// An RF path is a series of parts in a physical order. It is built by dragging
+// inventory onto a port rather than picking from a list, because the thing an
+// operator is describing is physical: this cable goes into that socket. The
+// ports are drawn from the connected radio's channel counts, so a 2R2T board
+// grows extra sockets without any change here.
+function radioPorts() {
+  const dev = (STATUS && STATUS.devices || []).find(
+    (d) => d.connected && d.kind !== "simulated_pluto_plus")
+    || (STATUS && STATUS.devices || []).find((d) => d.connected);
+  const caps = (dev && dev.capabilities) || { rx_channels: 1, tx_channels: 1 };
+  return {
+    name: dev ? (dev.kind === "simulated_pluto_plus" ? "Simulated" : "Pluto") : "Radio",
+    rx: Math.max(1, caps.rx_channels || 1),
+    tx: Math.max(1, caps.tx_channels || 1),
+  };
 }
+
+function chipHtml(c, opts = {}) {
+  const loss = fmtLoss(c);
+  const cls = [c.kind === "antenna" ? "antenna" : "",
+               (c.kind !== "antenna" && loss === null) ? "unchar" : ""].join(" ");
+  const sub = c.kind === "antenna"
+    ? (c.has_vna ? "characterised" : "no VNA data")
+    : (loss === null ? "loss unknown" : loss);
+  return `<div class="chip ${cls}" draggable="true"
+      data-cid="${esc(c.component_id)}" data-kind="${esc(c.kind)}"
+      ${opts.from ? `data-from="${esc(opts.from)}" data-idx="${opts.idx}"` : ""}>
+    <b>${esc(c.name)}${opts.from !== undefined && opts.from !== null
+        ? `<span class="chipx" data-drop-cid="${esc(c.component_id)}"
+             data-drop-from="${esc(opts.from)}" data-drop-idx="${opts.idx}"
+             title="remove">✕</span>` : ""}</b>
+    <span class="sub">${esc(c.kind)} · ${esc(sub)}</span>
+  </div>`;
+}
+
+function portHtml(kind, n, total) {
+  return `<div class="port"><b>${kind}${total > 1 ? n : ""}</b>
+    <span class="sub">${kind === "RX" ? "receive" : "transmit"} port</span></div>`;
+}
+
+const ARROW_EL = (t) => `<div class="chainarrow">${t}</div>`;
+
+function renderDropZone(which) {
+  const host = $(`path-${which}`);
+  if (!host) return;
+  const ports = radioPorts();
+  const ids = chainState[`${which}_ids`];
+  const antId = chainState[which === "rx" ? "antenna_rx" : "antenna_tx"];
+  const ant = antId ? compById(antId) : null;
+
+  const antSlot = ant
+    ? chipHtml(ant, { from: `${which}-antenna`, idx: 0 })
+    : `<div class="slot">drop an antenna here</div>`;
+  const parts = ids.map((id, i) => {
+    const c = compById(id);
+    if (!c) return `<div class="chip unchar"><b>missing</b>
+        <span class="sub">${esc(id)}</span></div>`;
+    return chipHtml(c, { from: which, idx: i });
+  });
+  const portBlocks = [];
+  const count = which === "rx" ? ports.rx : ports.tx;
+  for (let i = 1; i <= count; i++) {
+    portBlocks.push(portHtml(which.toUpperCase(), i, count));
+  }
+  const portEl = portBlocks.join("");
+
+  // signal order: RX runs antenna -> radio, TX runs radio -> antenna
+  const seq = which === "rx"
+    ? [antSlot, ...parts, portEl]
+    : [portEl, ...parts.slice().reverse(), antSlot];
+  host.innerHTML = seq.join(ARROW_EL("→")) ||
+    '<span class="hint">drag a part here</span>';
+  if (!ids.length && !ant) {
+    host.insertAdjacentHTML("beforeend",
+      ' <span class="hint" style="margin-left:10px">nothing patched yet</span>');
+  }
+}
+
+function renderPalette() {
+  const host = $("chain-palette");
+  if (!host) return;
+  host.innerHTML = chainComps.map((c) => chipHtml(c)).join("") ||
+    '<span class="mut">no components yet — add them under Components below</span>';
+  const pick = $("add-pick");
+  if (pick) {
+    pick.innerHTML = chainComps.map((c) =>
+      `<option value="${esc(c.component_id)}">${esc(c.kind)}: ${esc(c.name)}</option>`)
+      .join("") || '<option value="">add components first</option>';
+  }
+}
+
+// --- drag plumbing ---------------------------------------------------------
+document.addEventListener("dragstart", (ev) => {
+  const chip = ev.target.closest && ev.target.closest(".chip");
+  if (!chip) return;
+  ev.dataTransfer.effectAllowed = "move";
+  ev.dataTransfer.setData("text/plain", JSON.stringify({
+    cid: chip.dataset.cid, kind: chip.dataset.kind,
+    from: chip.dataset.from || "", idx: chip.dataset.idx }));
+  chip.classList.add("dragging");
+});
+document.addEventListener("dragend", (ev) => {
+  const chip = ev.target.closest && ev.target.closest(".chip");
+  if (chip) chip.classList.remove("dragging");
+});
+document.addEventListener("dragover", (ev) => {
+  const zone = ev.target.closest && ev.target.closest(".dropzone");
+  if (!zone) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "move";
+  zone.classList.add("over");
+});
+document.addEventListener("dragleave", (ev) => {
+  const zone = ev.target.closest && ev.target.closest(".dropzone");
+  if (zone && !zone.contains(ev.relatedTarget)) zone.classList.remove("over");
+});
+document.addEventListener("drop", (ev) => {
+  const zone = ev.target.closest && ev.target.closest(".dropzone");
+  if (!zone) return;
+  ev.preventDefault();
+  zone.classList.remove("over");
+  let payload;
+  try { payload = JSON.parse(ev.dataTransfer.getData("text/plain")); }
+  catch (e) { return; }
+  dropOnPath(zone.dataset.path, payload);
+});
+
+function removeFrom(from, idx, cid) {
+  if (from === "rx" || from === "tx") {
+    chainState[`${from}_ids`].splice(Number(idx), 1);
+  } else if (from === "rx-antenna") {
+    chainState.antenna_rx = "";
+  } else if (from === "tx-antenna") {
+    chainState.antenna_tx = "";
+  }
+}
+
+function dropOnPath(which, { cid, kind, from, idx }) {
+  if (from) removeFrom(from, idx, cid);
+  if (kind === "antenna") {
+    // One antenna per side: a port has a single thing screwed onto the end of
+    // it, so dropping a second replaces the first rather than stacking.
+    chainState[which === "rx" ? "antenna_rx" : "antenna_tx"] = cid;
+  } else {
+    chainState[`${which}_ids`].push(cid);
+  }
+  pushChain();
+}
+
+// removing a chip with the little x
+document.addEventListener("click", (ev) => {
+  const x = ev.target.closest && ev.target.closest(".chipx");
+  if (!x) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  removeFrom(x.dataset.dropFrom, x.dataset.dropIdx, x.dataset.dropCid);
+  pushChain();
+});
 
 async function pushChain() {
   await api("/api/rf_chain", { method: "POST", body: chainState });
   refreshChain();
 }
-
-window.movePath = (which, i, d) => {
-  const a = chainState[`${which}_ids`];
-  const j = i + d;
-  if (j < 0 || j >= a.length) return;
-  [a[i], a[j]] = [a[j], a[i]];
-  pushChain();
-};
-window.dropPath = (which, i) => {
-  chainState[`${which}_ids`].splice(i, 1);
-  pushChain();
-};
 
 async function refreshChain() {
   try { chainComps = await api("/api/components"); } catch (e) { return; }
@@ -432,19 +554,11 @@ async function refreshChain() {
   }
   if (!$("chain-flow")) return;      // dashboard-only refresh
 
-  const antOpts = '<option value="">— none —</option>' + chainComps
-    .filter((x) => x.kind === "antenna")
-    .map((x) => `<option value="${esc(x.component_id)}">${esc(x.name)}` +
-                `${x.has_vna ? " (characterised)" : ""}</option>`).join("");
-  for (const [id, cur] of [["chain-antenna-tx", chainState.antenna_tx],
-                           ["chain-antenna-rx", chainState.antenna_rx]]) {
-    $(id).innerHTML = antOpts;
-    $(id).value = cur || "";
-  }
   renderChainFlow(c);
   renderChainFacts(c);
-  renderPathEditor("tx");
-  renderPathEditor("rx");
+  renderPalette();
+  renderDropZone("rx");
+  renderDropZone("tx");
   await refreshChainConfigs();
 }
 
@@ -503,18 +617,23 @@ window.deleteChain = async (id) => {
   refreshChain();
 };
 
-for (const [sel, key] of [["chain-antenna-tx", "antenna_tx"],
-                          ["chain-antenna-rx", "antenna_rx"]]) {
-  $(sel).onchange = () => { chainState[key] = $(sel).value; pushChain(); };
-}
-for (const which of ["tx", "rx"]) {
-  $(`add-${which}`).onclick = () => {
-    const v = $(`add-${which}-pick`).value;
-    if (!v) return;
-    chainState[`${which}_ids`].push(v);
-    pushChain();
-  };
-}
+// Keyboard/touch fallback: drag-and-drop is the fast path, not the only one.
+$("add-go").onclick = () => {
+  const cid = $("add-pick").value;
+  if (!cid) return;
+  const c = compById(cid);
+  dropOnPath($("add-where").value, { cid, kind: c ? c.kind : "", from: "", idx: 0 });
+};
+
+$("chain-clear").onclick = () => {
+  chainState = { tx_ids: [], rx_ids: [], antenna_tx: "", antenna_rx: "" };
+  pushChain();
+};
+
+$("chain-detach").onclick = async () => {
+  await api("/api/chains/detach", { method: "POST" });
+  refreshChain();
+};
 
 $("chain-config-save").onclick = async () => {
   const name = $("chain-config-name").value.trim();

@@ -178,3 +178,42 @@ th { color: var(--mut); font-weight: 600; font-size: 11px; text-transform: upper
 .devcard { flex-direction: column; align-items: stretch; gap: 6px; }
 .devcard .devmain { min-width: 0; }
 .devactions { margin-top: 2px; }
+
+/* --- drag-and-drop chain builder ------------------------------------------ */
+.palette { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 2px; }
+.chip {
+  display: inline-flex; flex-direction: column; gap: 1px;
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 10px; cursor: grab; user-select: none;
+  line-height: 1.25;
+}
+.chip:active { cursor: grabbing; }
+.chip b { font-size: 12px; }
+.chip .sub { color: var(--mut); font-size: 10px; }
+.chip.antenna { border-color: #2f6f5c; }
+.chip.unchar  { border-color: var(--warn); }
+.chip.dragging { opacity: .4; }
+
+.dropzone {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0;
+  border: 1px dashed var(--border); border-radius: 8px;
+  padding: 8px 10px; min-height: 58px; margin-bottom: 4px;
+  transition: border-color .12s, background .12s;
+}
+.dropzone.over { border-color: var(--accent); background: #10201b; }
+.dropzone .hint { color: var(--mut); font-style: italic; font-size: 12px; }
+.port {
+  background: #141d2b; border: 1px solid #33507a; border-radius: 7px;
+  padding: 6px 11px; line-height: 1.25; white-space: nowrap;
+}
+.port b { display: block; font-size: 12px; }
+.port .sub { color: var(--mut); font-size: 10px; }
+.slot {
+  border: 1px dashed #2f6f5c; border-radius: 7px; padding: 6px 11px;
+  color: var(--mut); font-size: 12px; font-style: italic; white-space: nowrap;
+}
+.slot.filled { font-style: normal; }
+.chipx {
+  margin-left: 7px; color: var(--mut); cursor: pointer; font-size: 11px;
+}
+.chipx:hover { color: var(--danger); }

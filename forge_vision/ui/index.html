@@ -354,22 +354,27 @@
 
     <div class="grid2">
       <div class="panel">
-        <h2>Build the chain <span class="mut">— order is signal order</span></h2>
-        <div class="toolbar">
-          <label>TX antenna <select id="chain-antenna-tx"></select></label>
-          <label>RX antenna <select id="chain-antenna-rx"></select></label>
-        </div>
-        <div class="subhead">TX path <span class="mut">radio → antenna</span></div>
-        <div id="path-tx"></div>
-        <div class="toolbar">
-          <select id="add-tx-pick"></select>
-          <button id="add-tx">Add to TX path</button>
-        </div>
-        <div class="subhead">RX path <span class="mut">antenna → radio</span></div>
-        <div id="path-rx"></div>
-        <div class="toolbar">
-          <select id="add-rx-pick"></select>
-          <button id="add-rx">Add to RX path</button>
+        <h2>Build the chain
+          <span class="mut">— drag a part onto a port; order is signal order</span></h2>
+        <div class="subhead">Inventory <span class="mut">— drag from here</span></div>
+        <div id="chain-palette" class="palette"></div>
+
+        <div class="subhead">Receive <span class="mut">— antenna → radio</span></div>
+        <div id="path-rx" class="dropzone" data-path="rx"></div>
+
+        <div class="subhead">Transmit <span class="mut">— radio → antenna</span></div>
+        <div id="path-tx" class="dropzone" data-path="tx"></div>
+
+        <div class="toolbar" style="margin-top:8px">
+          <button id="chain-clear">Clear chain</button>
+          <button id="chain-detach">Start a new chain</button>
+          <span class="mut">or add without dragging:</span>
+          <select id="add-pick"></select>
+          <select id="add-where">
+            <option value="rx">receive</option>
+            <option value="tx">transmit</option>
+          </select>
+          <button id="add-go">Add</button>
         </div>
       </div>
 

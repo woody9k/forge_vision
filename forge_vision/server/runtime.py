@@ -1325,6 +1325,18 @@ class Runtime:
                           name=cfg["name"])
         return self.current_chain()
 
+    def detach_chain_config(self) -> dict:
+        """Stop claiming the working chain came from a saved configuration.
+
+        Without this, clearing the patching leaves a chain that still reports
+        itself as a modified version of whatever was last active — technically
+        true, but it reads as an unresolved problem rather than a fresh start.
+        """
+        w = self.chains.working()
+        self.chains.set_working(w["tx_ids"], w["rx_ids"], w["antenna_tx"],
+                                w["antenna_rx"], config_id="")
+        return self.current_chain()
+
     def delete_chain_config(self, config_id: str) -> dict:
         self.chains.delete(config_id)
         return {"deleted": config_id}

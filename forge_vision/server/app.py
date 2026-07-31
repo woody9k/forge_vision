@@ -276,6 +276,12 @@ def save_chain_config(body: S.ChainConfigRequest):
         raise _fail(exc)
 
 
+@app.post("/api/chains/detach")
+def detach_chain_config():
+    """Work from an unsaved chain instead of a named configuration."""
+    return runtime.detach_chain_config()
+
+
 @app.get("/api/chains/{config_id}")
 def chain_config(config_id: str):
     """A configuration plus every measurement taken with it."""
