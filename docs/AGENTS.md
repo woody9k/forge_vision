@@ -327,6 +327,9 @@ Code existing is not evidence that a physical claim holds. As of this writing:
   simulation only |
 | Bistatic geometry, coherent phase reference | **not implemented** — the
   imaging model currently assumes co-located TX and RX |
+| Second RX/TX channel | **hardware only, uncharacterized** — the bench board
+  runs 2R2T since 2026-07-31, but the API still reports one RX and one TX
+  channel and no measurement of channel 2 exists yet |
 
 When reporting a result, say which of these it rests on. A migrated image from
 simulated data is a demonstration of the code, not a measurement of the ground.
