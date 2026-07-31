@@ -69,17 +69,43 @@ positioning.py  manual / survey-wheel / replay position sources
 
 ## Hardware notes that cost time to learn
 
-- The bench radio reports as a stock **PlutoSDR Rev.B**, has an SD slot, and is
-  almost certainly a Pluto+ running stock ADI firmware.
-- It was unlocked to **AD9364** (70 MHz – 6 GHz) via `fw_setenv compatible
-  ad9364`. Setting `compatible=ad9361` on a non-Rev.C model string is silently
-  downgraded to `ad9363a` by the boot script — that trap cost an evening.
-- The driver **advertises** a 46.875 MHz tuning floor but rejects anything below
-  70 MHz. Capability detection probes the edge rather than trusting the
-  advertised value.
-- A Pluto cannot stream at full rate; captures are single DMA bursts.
-- Only one handle may claim the USB interface. `connect()` is idempotent, and
-  `usb:` and `ip:192.168.2.1` are the same board.
+- The bench radio is a **Pluto+**. Since the 2026-07-30 reflash it reports as
+  **PlutoSDR Rev.C (Z7010-AD9364)**, `fw_version v0.33-3-gd382-dirty`, kernel
+  5.4.0, on-device libiio 0.21. It previously reported Rev.B with kernel 6.1
+  and libiio 0.26 — if you see Rev.B, the older firmware is back.
+- It runs as **AD9364** (`ad9361-phy,model: ad9364`), 1R1T: `cf-ad9361-lpc`
+  has two channels, which is I/Q of a single receiver, not two receivers.
+  Earlier firmware needed `fw_setenv compatible ad9364`; setting
+  `compatible=ad9361` on a non-Rev.C model string was silently downgraded to
+  `ad9363a` by the boot script, which cost an evening. The model string is now
+  Rev.C, so that particular trap no longer applies.
+- Tuning is **70 MHz – 6 GHz**. The current firmware advertises
+  `[70000000 1 6000000000]` honestly; the older one advertised a 46.875 MHz
+  floor and then rejected anything below 70 MHz. Capability detection still
+  probes the edge rather than trusting the advertised value — cheap, and it
+  is what caught the old lie.
+- A Pluto cannot stream at full rate; captures are single DMA bursts. Measured
+  sustained buffer throughput, 16 MB reads:
+
+  | transport | throughput | sustained | live frames |
+  |---|---|---|---|
+  | `ip:<LAN address>` (Ethernet) | 52.6 MB/s | 13.2 MSPS | **11.8 fps** |
+  | `usb:` | 28.3 MB/s | 7.1 MSPS | 5.9 fps |
+  | `ip:192.168.2.1` (USB gadget) | 21.3 MB/s | 5.3 MSPS | — |
+
+  Prefer Ethernet for live work: it is twice the frame rate and needs no udev
+  rule. Only one handle may claim the **USB** interface (`connect()` is
+  idempotent); the network backends are not exclusive, so diagnostics can run
+  alongside a deployment.
+- **`usb:`, `ip:192.168.2.1` and the Ethernet address are all the same board.**
+  Verified by writing the LO on one and reading it on another. Registering the
+  radio twice gives two device entries with independent cached configs that
+  silently diverge — observed one entry reporting 923 MHz while the other and
+  the hardware were at 1090 MHz. A capture taken through the stale entry would
+  record an RF config the radio never had. Register one URI, not two.
+- Reflashing re-enumerates the board, which invalidates any open USB handle.
+  The adapter keeps reporting `connected: true`; the tell is that `health`
+  loses its `temperature_c` field. Disconnect and reconnect to recover.
 
 ## Gotchas
 
