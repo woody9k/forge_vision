@@ -154,3 +154,27 @@ th { color: var(--mut); font-weight: 600; font-size: 11px; text-transform: upper
 .pathrow button { padding: 2px 7px; font-size: 12px; }
 .subhead { color: var(--mut); font-size: 12px; text-transform: uppercase;
            letter-spacing: .04em; margin: 12px 0 6px; }
+
+/* --- how a radio is attached ---------------------------------------------- */
+.linkbadge { font-size: 11px; padding: 1px 7px; border-radius: 4px;
+             margin-left: 6px; white-space: nowrap; }
+.link-network    { background: #12291d; color: #7fe0a8; border: 1px solid #235c40; }
+.link-usb        { background: #1c2a3d; color: #8db8e8; border: 1px solid #2f4a6b; }
+.link-usb-gadget { background: #2b2410; color: #e8c96a; border: 1px solid #5c4c1c; }
+.link-simulated  { background: #262b33; color: #9aa8bd; border: 1px solid #3a4250; }
+.devcard .addr { color: var(--mut); font-family: ui-monospace, monospace; font-size: 12px; }
+.devcard details { margin-top: 4px; }
+.devcard summary { color: var(--mut); font-size: 12px; cursor: pointer; }
+.devcard summary:hover { color: var(--text); }
+.devactions { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; }
+.devactions button { padding: 3px 9px; font-size: 12px; }
+.sysrow { display: flex; justify-content: space-between; gap: 12px;
+          padding: 3px 0; border-bottom: 1px solid var(--border); }
+.sysrow:last-child { border-bottom: 0; }
+.sysrow .k { color: var(--mut); }
+
+/* Device cards stack: the description needs the full width, and the actions
+   were being squeezed into a column beside it. */
+.devcard { flex-direction: column; align-items: stretch; gap: 6px; }
+.devcard .devmain { min-width: 0; }
+.devactions { margin-top: 2px; }

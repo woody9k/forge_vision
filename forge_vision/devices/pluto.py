@@ -81,7 +81,7 @@ class PlutoDevice(DeviceAdapter):
 
     @classmethod
     def discover(cls, uris: tuple = (), prefer: str = "auto",
-                 measure: bool = True) -> list["PlutoDevice"]:
+                 measure: bool = True, book: tuple = ()) -> list["PlutoDevice"]:
         """Probe every candidate transport and open one device per board.
 
         `usb:`, the 192.168.2.1 gadget and a physical Ethernet port are all
@@ -93,8 +93,9 @@ class PlutoDevice(DeviceAdapter):
         found: list[PlutoDevice] = []
         if not HAVE_ADI:
             return found
-        probes = discovery.survey(discovery.candidate_uris(tuple(uris)),
-                                  measure=measure)
+        probes = discovery.survey(
+            discovery.candidate_uris(tuple(uris), book=tuple(book)),
+            measure=measure)
         for board in discovery.group_boards(probes):
             uris_in_board = {t["uri"] for t in board["transports"]}
             pick = discovery.choose(

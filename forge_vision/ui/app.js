@@ -71,27 +71,77 @@ async function refreshStatus() {
 
 function renderDashboard() {
   const s = STATUS;
-  $("device-list").innerHTML = s.devices.map((d) => `
+  const LINK_LABEL = { network: "Ethernet", usb: "USB",
+                       "usb-gadget": "USB (network gadget)",
+                       simulated: "Simulated" };
+  $("device-list").innerHTML = s.devices.map((d) => {
+    const L = d.link || { kind: "simulated" };
+    const speed = L.throughput_mb_s ? `${L.throughput_mb_s} MB/s` : "";
+    // One button per genuinely different kind of link, fastest of each, and
+    // never the kind we are already using — offering "use Ethernet" while on
+    // Ethernet is noise, and mDNS names can resolve to a link we already have.
+    const byKind = new Map();
+    for (const a of (L.alternatives || [])) {
+      if (a.error || a.kind === L.kind) continue;
+      const cur = byKind.get(a.kind);
+      if (!cur || (a.throughput_mb_s || 0) > (cur.throughput_mb_s || 0)) byKind.set(a.kind, a);
+    }
+    const alts = [...byKind.values()];
+    return `
     <div class="devcard">
-      <div><span class="dot ${d.connected ? "on" : "off"}"></span>
-        <b>${esc(d.device_id)}</b> <span class="mut">${esc(d.kind)}</span><br>
+      <div class="devmain">
+        <span class="dot ${d.connected ? "on" : "off"}"></span>
+        <b>${esc(d.kind === "simulated_pluto_plus" ? "Simulated radio" : "Pluto")}</b>
+        <span class="linkbadge link-${esc(L.kind)}">${esc(LINK_LABEL[L.kind] || L.kind)}</span>
+        ${L.address ? `<span class="addr">${esc(L.address)}</span>` : ""}
+        ${speed ? `<span class="mut"> · ${esc(speed)}</span>` : ""}
+        ${d.tx_enabled ? '<span class="tag" style="background:#57120a;color:#ffb4a4">TX ON</span>' : ""}
+        <br>
         <span class="mut">${fmtHz(d.config.center_frequency_hz)} ·
-        ${(d.config.sample_rate_hz / 1e6).toFixed(2)} MSPS ·
-        RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB<br>
-        tuning ${fmtHz(d.capabilities.min_frequency)}–${fmtHz(d.capabilities.max_frequency)} ·
-        max BW ${(d.capabilities.max_bandwidth / 1e6).toFixed(0)} MHz ·
-        waveforms: ${(d.compatible_waveforms || []).map(esc).join(", ") || "none"}
-        ${(d.capability_notes || []).map((n) => "<br>" + esc(n)).join("")}</span></div>
-      <div>${d.tx_enabled ? '<span class="tag" style="background:#57120a;color:#ffb4a4">TX</span>' : ""}
+          ${(d.config.sample_rate_hz / 1e6).toFixed(2)} MSPS ·
+          RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB</span>
+        <details>
+          <summary>capabilities &amp; notes</summary>
+          <span class="mut">
+            id <code>${esc(d.device_id)}</code><br>
+            tuning ${fmtHz(d.capabilities.min_frequency)}–${fmtHz(d.capabilities.max_frequency)} ·
+            max BW ${(d.capabilities.max_bandwidth / 1e6).toFixed(0)} MHz<br>
+            waveforms: ${(d.compatible_waveforms || []).map(esc).join(", ") || "none"}
+            ${L.chosen_because ? "<br>chose this link: " + esc(L.chosen_because) : ""}
+            ${(d.capability_notes || []).map((n) => "<br>" + esc(n)).join("")}
+          </span>
+        </details>
+      </div>
+      <div class="devactions">
         ${d.connected
-          ? `<button onclick="devDisconnect('${d.device_id}')">Disconnect</button>`
-          : `<button onclick="devConnect('${d.device_id}')">Connect</button>`}</div>
-    </div>`).join("");
+          ? `<button onclick="devDisconnect('${esc(d.device_id)}')">Disconnect</button>`
+          : `<button onclick="devConnect('${esc(d.device_id)}')">Connect</button>`}
+        ${alts.map((a) => `<button title="${esc(a.uri)}"
+             onclick="switchTransport('${esc(d.device_id)}','${esc(a.uri)}')"
+             >Use ${esc(LINK_LABEL[a.kind] || a.kind)}${
+               a.throughput_mb_s ? ` (${a.throughput_mb_s} MB/s)` : ""}</button>`).join("")}
+        ${L.kind === "simulated" ? ""
+          : `<button onclick="forgetDevice('${esc(d.device_id)}')">Forget</button>`}
+      </div>
+    </div>`; }).join("");
+
+  const st = s.storage, sf = s.safety;
   $("system-info").innerHTML = `
-    <div class="mono">version ${esc(s.version)}
-storage: ${fmtBytes(s.storage.experiments_bytes)} experiments · ${fmtBytes(s.storage.disk_free_bytes)} free${s.storage.low_space_warning ? " ⚠ LOW" : ""}
-safety: ${s.safety.armed ? "armed by " + esc(s.safety.armed_by) : "disarmed"} · profile ${esc(s.safety.limits.active_profile)}
-active scans: ${Object.keys(s.active_scans).length}</div>`;
+    <div class="sysrow"><span class="k">Version</span><span>${esc(s.version)}</span></div>
+    <div class="sysrow"><span class="k">Captures stored</span>
+      <span>${fmtBytes(st.experiments_bytes)}</span></div>
+    <div class="sysrow"><span class="k">Disk free</span>
+      <span>${fmtBytes(st.disk_free_bytes)}${
+        st.low_space_warning ? ' <span style="color:var(--warn)">LOW</span>' : ""}</span></div>
+    <div class="sysrow"><span class="k">Transmit</span>
+      <span>${sf.armed
+        ? `<span style="color:var(--warn)">armed by ${esc(sf.armed_by)}</span>`
+        : "disarmed"}</span></div>
+    <div class="sysrow"><span class="k">Safety profile</span>
+      <span>${esc(sf.limits.active_profile)}</span></div>
+    <div class="sysrow"><span class="k">Scans in progress</span>
+      <span>${Object.keys(s.active_scans).length}</span></div>`;
+  refreshRadioBook();
   $("recent-experiments").innerHTML = s.recent_experiments.map((e) => `
     <div class="expitem" onclick="openLibrary('${e.experiment_id}')">
       <div><b>${esc(e.name)}</b> <span class="tag">${esc(e.kind)}</span>
@@ -137,6 +187,45 @@ function fillSelectors() {
 
 ["live-device", "range-device", "scan-device"].forEach((id) =>
   $(id).addEventListener("change", () => { if (STATUS) fillSelectors(); }));
+
+window.forgetDevice = async (id) => {
+  if (!confirm(`Forget ${id}?\n\nThis removes it from the list. The next scan will find it again.`)) return;
+  try { await api(`/api/devices/${encodeURIComponent(id)}/forget`, { method: "POST" }); }
+  catch (e) { alert(e.message || e); }
+  refreshStatus();
+};
+
+window.switchTransport = async (id, uri) => {
+  $("rescan-status").textContent = `switching to ${uri}…`;
+  try {
+    await api(`/api/devices/${encodeURIComponent(id)}/switch_transport`,
+              { method: "POST", body: { uri } });
+    $("rescan-status").textContent = `now on ${uri}`;
+  } catch (e) { $("rescan-status").textContent = `could not switch: ${e.message || e}`; }
+  refreshStatus();
+};
+
+async function refreshRadioBook() {
+  if (!$("radio-book")) return;
+  let list;
+  try { list = await api("/api/radios"); } catch (e) { return; }
+  $("radio-book").innerHTML = list.map((r) => `
+    <div class="pathrow">
+      <span class="grow">${esc(r.label)}
+        <span class="addr">${esc(r.uri)}</span>
+        ${r.in_use ? '<span class="tag">in use</span>' : ""}
+        ${r.overridden_by_env
+          ? '<span class="tag" style="background:#3a2f12;color:#e8c96a">overridden by FORGE_VISION_PLUTO_URIS</span>'
+          : ""}</span>
+      <button onclick="removeRadio('${esc(r.radio_id)}')">Remove</button>
+    </div>`).join("") ||
+    '<div class="mut" style="padding:4px 0">none saved — USB and pluto.local are always checked</div>';
+}
+
+window.removeRadio = async (id) => {
+  await api(`/api/radios/${encodeURIComponent(id)}/delete`, { method: "POST" });
+  refreshRadioBook();
+};
 
 window.devConnect = async (id) => { await api(`/api/devices/${id}/connect`, { method: "POST" }); refreshStatus(); };
 window.devDisconnect = async (id) => { await api(`/api/devices/${id}/disconnect`, { method: "POST" }); refreshStatus(); };
@@ -442,20 +531,39 @@ async function refreshRxProtection() {
 
 /* ---------- hardware rescan ---------- */
 async function doRescan(uri) {
-  $("rescan-status").textContent = "probing…";
+  // Measuring every transport takes a few seconds, so say so rather than
+  // leaving a button that looks like it did nothing.
+  $("rescan-status").textContent = uri
+    ? `connecting to ${uri}…` : "measuring each way in…";
   try {
     const r = await api("/api/devices/rescan", { method: "POST", body: { uri } });
     if (!r.driver.available) { $("rescan-status").textContent = r.driver.detail; return; }
     const bits = [];
-    if (r.added.length) bits.push("added: " + r.added.map((d) => d.device_id).join(", "));
-    if (r.already_present.length) bits.push("already present: " + r.already_present.join(", "));
+    for (const d of r.added) {
+      const L = d.link || {};
+      bits.push(`found a radio over ${L.kind === "network" ? "Ethernet" : L.kind}` +
+                (L.address ? ` at ${L.address}` : "") +
+                (L.throughput_mb_s ? ` (${L.throughput_mb_s} MB/s)` : ""));
+    }
+    if (r.already_present.length) bits.push("already listed: " + r.already_present.join(", "));
     r.errors.forEach((e) => bits.push(`${e.uri}: ${e.error}`));
-    $("rescan-status").textContent = bits.join(" · ") || "no devices found";
+    $("rescan-status").textContent = bits.join(" · ") || "no radios found";
     refreshStatus();
-  } catch (e) { $("rescan-status").textContent = "rescan failed: " + e.message; }
+  } catch (e) { $("rescan-status").textContent = "scan failed: " + e.message; }
 }
 $("rescan-btn").onclick = () => doRescan("");
-$("rescan-uri-btn").onclick = () => doRescan($("rescan-uri").value.trim());
+
+$("radio-add").onclick = async () => {
+  const address = $("radio-addr").value.trim();
+  if (!address) { alert("Enter the radio's hostname or IP address."); return; }
+  try {
+    await api("/api/radios", { method: "POST", body: {
+      address, label: $("radio-label").value.trim() } });
+  } catch (e) { alert(`Could not save that address: ${e.message || e}`); return; }
+  $("radio-addr").value = ""; $("radio-label").value = "";
+  await refreshRadioBook();
+  doRescan("");          // saving an address is a request to go and look
+};
 
 /* ---------- Live RF ---------- */
 let waterfallRows = [];

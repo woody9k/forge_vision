@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785467542.5083153,
+    "time": 1785469146.371255,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -92,18 +92,21 @@ Platform state: devices, safety, storage, waveforms.
     "fmcw_pluto_40M",
     "fmcw_narrow_20M",
     "... 6 total"
-   ]
+   ],
+   "link": {
+    "uri": "",
+    "kind": "simulated",
+    "address": "",
+    "throughput_mb_s": null,
+    "chosen_because": "",
+    "alternatives": []
+   }
   },
   {
    "device_id": "pluto-ip:pluto.boblab.net",
    "kind": "pluto",
    "connected": true,
-   "tx_enabled": false,
-   "config": {
-    "center_frequency_hz": 915000000.0,
-    "sample_rate_hz": 61440000.0,
-    "rx_bandwidth_hz": 56000000.0,
-    "rx_gain_db"
+   "tx_en
 ```
 
 ### `GET /api/experiments`
@@ -581,6 +584,8 @@ untyped object, so they are documented here.
 | POST | `/api/devices/{device_id}/configure` | Configure |
 | POST | `/api/devices/{device_id}/connect` | Connect |
 | POST | `/api/devices/{device_id}/disconnect` | Disconnect |
+| POST | `/api/devices/{device_id}/forget` | Forget Device |
+| POST | `/api/devices/{device_id}/switch_transport` | Switch Transport |
 | POST | `/api/devices/{device_id}/tx` | Set Tx ⚠️ transmits |
 | GET | `/api/experiments` | Experiments |
 | GET | `/api/experiments/{exp_id}` | Experiment |
@@ -602,6 +607,10 @@ untyped object, so they are documented here.
 | GET | `/api/position` | Position Status |
 | GET | `/api/position/ports` | List Serial Ports |
 | POST | `/api/position/source` | Set Position Source |
+| GET | `/api/radios` | Radio Addresses |
+| POST | `/api/radios` | Add Radio Address |
+| POST | `/api/radios/{radio_id}/delete` | Remove Radio Address |
+| POST | `/api/radios/{radio_id}/update` | Update Radio Address |
 | POST | `/api/range/run` | Range Run ⚠️ transmits |
 | GET | `/api/rf_chain` | Rf Chain |
 | POST | `/api/rf_chain` | Set Rf Chain |

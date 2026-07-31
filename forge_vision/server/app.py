@@ -60,6 +60,54 @@ def device_transports(measure: bool = True):
     return runtime.survey_transports(measure=measure)
 
 
+@app.get("/api/radios")
+def radio_addresses():
+    """Saved radio addresses, editable without touching a config file."""
+    return runtime.list_radio_addresses()
+
+
+@app.post("/api/radios")
+def add_radio_address(body: S.RadioAddressRequest):
+    try:
+        return runtime.add_radio_address(body.address, label=body.label)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/radios/{radio_id}/update")
+def update_radio_address(radio_id: str, body: S.RadioAddressUpdateRequest):
+    try:
+        return runtime.update_radio_address(radio_id, body.model_dump(exclude_none=True))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/radios/{radio_id}/delete")
+def remove_radio_address(radio_id: str):
+    try:
+        return runtime.remove_radio_address(radio_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/devices/{device_id}/forget")
+def forget_device(device_id: str):
+    """Drop a radio from this session. The next scan will find it again."""
+    try:
+        return runtime.forget_device(device_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/devices/{device_id}/switch_transport")
+def switch_transport(device_id: str, body: S.SwitchTransportRequest):
+    """Reach the same radio over a different transport."""
+    try:
+        return runtime.switch_transport(device_id, body.uri)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 @app.post("/api/devices/{device_id}/connect")
 def connect(device_id: str):
     try:

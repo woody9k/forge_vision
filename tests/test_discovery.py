@@ -50,10 +50,33 @@ def test_explicit_candidates_come_first_and_are_not_duplicated(monkeypatch):
     ("usb:1.19.5", "usb"),
     ("ip:192.168.2.1", "usb-gadget"),
     ("ip:192.168.99.222", "network"),
-    ("ip:pluto.local", "network"),
 ])
-def test_transport_kind(uri, kind):
-    assert _p(uri).kind == kind
+def test_transport_kind_from_literal_addresses(uri, kind):
+    assert discovery.uri_kind(uri) == kind
+
+
+def test_a_name_is_classified_by_what_it_resolves_to(monkeypatch):
+    """mDNS answers pluto.local with the RNDIS gadget on 192.168.2.1. Calling
+    that "Ethernet" would offer a switch to a link we are already on, at a
+    third of the throughput — so classify by the resolved address."""
+    monkeypatch.setattr(discovery, "resolve_host",
+                        lambda h: {"pluto.local": "192.168.2.1",
+                                   "pluto.example.net": "10.0.0.9"}.get(h, ""))
+    assert discovery.uri_kind("ip:pluto.local") == "usb-gadget"
+    assert discovery.uri_kind("ip:pluto.example.net") == "network"
+
+
+def test_address_shows_the_resolved_ip_for_a_name(monkeypatch):
+    monkeypatch.setattr(discovery, "resolve_host",
+                        lambda h: "192.168.99.222" if h == "pluto.lab" else h)
+    assert discovery.uri_address("ip:pluto.lab") == "pluto.lab (192.168.99.222)"
+    assert discovery.uri_address("ip:192.168.99.222") == "192.168.99.222"
+    assert discovery.uri_address("usb:") == ""
+
+
+def test_an_unresolvable_name_is_still_treated_as_network(monkeypatch):
+    monkeypatch.setattr(discovery, "resolve_host", lambda h: "")
+    assert discovery.uri_kind("ip:nowhere.invalid") == "network"
 
 
 # -- ranking -----------------------------------------------------------------
@@ -175,3 +198,63 @@ def test_unreachable_probes_form_no_board():
         _p("usb:", reachable=False, error="no device"),
         _p("ip:pluto.local", reachable=False, error="name not resolved")])
     assert boards == []
+
+
+# -- the saved address book (FR-DEV-002) -------------------------------------
+def _book(tmp_path):
+    from forge_vision.devices.book import RadioBook
+    return RadioBook(str(tmp_path / "radios.json"))
+
+
+def test_an_operator_types_an_address_not_a_uri(tmp_path):
+    """'pluto.boblab.net' and '192.168.99.222' are what a person types; the
+    ip: prefix is a detail of the library, not something to have to know."""
+    from forge_vision.devices.book import normalise_uri
+    assert normalise_uri("pluto.boblab.net") == "ip:pluto.boblab.net"
+    assert normalise_uri("192.168.99.222") == "ip:192.168.99.222"
+    assert normalise_uri("ip:192.168.99.222") == "ip:192.168.99.222"
+    assert normalise_uri("usb:") == "usb:"
+    with pytest.raises(ValueError, match="address is required"):
+        normalise_uri("   ")
+
+
+def test_addresses_survive_a_restart(tmp_path):
+    from forge_vision.devices.book import RadioBook
+    path = str(tmp_path / "radios.json")
+    RadioBook(path).add("pluto.boblab.net", label="Bench")
+    assert RadioBook(path).uris() == ["ip:pluto.boblab.net"]
+
+
+def test_adding_the_same_address_twice_is_not_an_error(tmp_path):
+    b = _book(tmp_path)
+    first = b.add("192.168.99.222", label="Bench")
+    again = b.add("ip:192.168.99.222", label="Bench renamed")
+    assert first["radio_id"] == again["radio_id"]
+    assert len(b.list()) == 1
+    assert b.list()[0]["label"] == "Bench renamed"
+
+
+def test_disabled_addresses_are_not_probed(tmp_path):
+    b = _book(tmp_path)
+    e = b.add("192.168.99.222")
+    b.update(e["radio_id"], {"enabled": False})
+    assert b.uris() == []
+
+
+def test_removing_an_unknown_address_is_reported(tmp_path):
+    with pytest.raises(KeyError):
+        _book(tmp_path).remove("nope")
+
+
+def test_env_pin_beats_the_address_book(monkeypatch):
+    """A deployment that pins its transports must not have that overridden by
+    something clicked in a browser."""
+    monkeypatch.setenv("FORGE_VISION_PLUTO_URIS", "usb:")
+    assert discovery.candidate_uris(book=("ip:pluto.boblab.net",)) == ["usb:"]
+
+
+def test_without_a_pin_the_book_is_probed_alongside_the_defaults(monkeypatch):
+    monkeypatch.delenv("FORGE_VISION_PLUTO_URIS", raising=False)
+    uris = discovery.candidate_uris(book=("ip:pluto.boblab.net",))
+    assert uris[0] == "ip:pluto.boblab.net"
+    assert "usb:" in uris

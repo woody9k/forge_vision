@@ -40,6 +40,25 @@ class RescanRequest(Strict):
                                             "Set false for a faster, unmeasured scan.")
 
 
+class RadioAddressRequest(Strict):
+    """Where a radio lives, in whatever form a person would type it."""
+    address: str = Field(..., min_length=1,
+                         description="Hostname or IP (ip: prefix optional), "
+                                     "or an explicit usb: URI")
+    label: str = ""
+
+
+class RadioAddressUpdateRequest(Strict):
+    label: str | None = None
+    address: str | None = None
+    enabled: bool | None = None
+
+
+class SwitchTransportRequest(Strict):
+    """Reach the same radio a different way."""
+    uri: str = Field(..., min_length=1)
+
+
 class DeviceConfigRequest(Strict):
     center_frequency_hz: float | None = None
     sample_rate_hz: float | None = None

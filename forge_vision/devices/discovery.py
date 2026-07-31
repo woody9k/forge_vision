@@ -47,16 +47,72 @@ IDENTITY_ATTRS = ("hw_serial", "hw_model", "hw_model_variant", "fw_version",
 PROBE_SAMPLES = 1 << 20
 
 
-def candidate_uris(extra: tuple = ()) -> list[str]:
-    """Candidates to probe, honouring FORGE_VISION_PLUTO_URIS."""
+def candidate_uris(extra: tuple = (), book: tuple = ()) -> list[str]:
+    """Candidates to probe.
+
+    FORGE_VISION_PLUTO_URIS wins outright when set: a deployment that pins its
+    transports should not have that overridden by something clicked in a
+    browser. Otherwise the operator's saved addresses are probed alongside the
+    fixed defaults.
+    """
     env = os.environ.get("FORGE_VISION_PLUTO_URIS", "").strip()
-    base = ([u.strip() for u in env.split(",") if u.strip()]
-            if env else list(DEFAULT_CANDIDATES))
+    if env:
+        base = [u.strip() for u in env.split(",") if u.strip()]
+    else:
+        base = [*book, *DEFAULT_CANDIDATES]
     out = []
     for uri in [*extra, *base]:
         if uri and uri not in out:
             out.append(uri)
     return out
+
+
+_RESOLVED: dict[str, str] = {}
+
+
+def resolve_host(host: str) -> str:
+    """Best-effort A record for a hostname; "" if it will not resolve."""
+    if not host:
+        return ""
+    if host[0].isdigit():
+        return host
+    if host in _RESOLVED:
+        return _RESOLVED[host]
+    try:
+        import socket
+        addr = socket.getaddrinfo(host, None, socket.AF_INET)[0][4][0]
+    except Exception:  # noqa: BLE001 - an unresolvable name is a real answer
+        addr = ""
+    _RESOLVED[host] = addr
+    return addr
+
+
+def uri_kind(uri: str, resolve: bool = True) -> str:
+    """How the radio is actually attached.
+
+    Classified by the *resolved* address, not the URI text. `pluto.local`
+    reads like a network address but mDNS answers it with the RNDIS gadget on
+    192.168.2.1 — calling that "Ethernet" would offer the operator a switch to
+    a link they are effectively already on, at a third of the throughput.
+    """
+    if uri.startswith("usb:"):
+        return "usb"
+    if uri.startswith("ip:"):
+        host = uri[3:]
+        addr = resolve_host(host) if resolve else host
+        if addr.startswith("192.168.2."):
+            return "usb-gadget"
+        return "network"
+    return "other"
+
+
+def uri_address(uri: str) -> str:
+    """The host part of an ip: URI, with the resolved address if it is a name."""
+    if not uri.startswith("ip:"):
+        return ""
+    host = uri[3:]
+    addr = resolve_host(host)
+    return f"{host} ({addr})" if addr and addr != host else host
 
 
 @dataclass
@@ -72,13 +128,7 @@ class TransportProbe:
 
     @property
     def kind(self) -> str:
-        if self.uri.startswith("usb:"):
-            return "usb"
-        if self.uri.startswith("ip:192.168.2."):
-            return "usb-gadget"
-        if self.uri.startswith("ip:"):
-            return "network"
-        return "other"
+        return uri_kind(self.uri)
 
     def to_dict(self) -> dict:
         return {

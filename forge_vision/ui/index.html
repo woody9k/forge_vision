@@ -31,15 +31,24 @@
   <section id="tab-dashboard" class="tab active">
     <div class="grid2">
       <div class="panel">
-        <h2>Devices</h2>
+        <h2>Radios <span class="mut">— what the platform can talk to</span></h2>
         <div id="device-list"></div>
-        <div class="toolbar" style="margin-bottom:0">
-          <button id="rescan-btn">Rescan hardware</button>
-          <label>URI <input id="rescan-uri" type="text" size="18"
-            placeholder="ip:192.168.1.87"></label>
-          <button id="rescan-uri-btn">Connect URI</button>
+        <div class="toolbar" style="margin-bottom:6px">
+          <button id="rescan-btn" class="primary">Scan for radios</button>
+          <span class="mut">checks USB and every saved address, then picks the
+            fastest way in</span>
+          <span id="rescan-status" class="mut"></span>
         </div>
-        <div id="rescan-status" class="mut"></div>
+        <div class="subhead">Saved addresses
+          <span class="mut">— where to look besides USB</span></div>
+        <div id="radio-book"></div>
+        <div class="toolbar" style="margin-bottom:0">
+          <label>Address <input id="radio-addr" type="text" size="22"
+            placeholder="pluto.boblab.net or 192.168.99.222"></label>
+          <label>Name <input id="radio-label" type="text" size="12"
+            placeholder="bench Pluto"></label>
+          <button id="radio-add">Add</button>
+        </div>
       </div>
       <div class="panel">
         <h2>System</h2>

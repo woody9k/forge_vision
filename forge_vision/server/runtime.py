@@ -29,6 +29,7 @@ from ..positioning import (ManualSource, PositionSample, ReplaySource,
 from ..imaging.bscan import BScanBuilder
 from ..imaging.migration import focused_targets, migrate_bscan
 from ..reports import site_report
+from ..devices.book import RadioBook
 from ..rfcomponents.chains import ChainStore
 from ..rfcomponents.store import ComponentStore
 from ..safety import SafetyController
@@ -85,6 +86,7 @@ class Runtime:
         self.store = ExperimentStore(os.path.join(self.data_dir, "experiments"))
         self.components = ComponentStore(os.path.join(self.data_dir, "components"))
         self.chains = ChainStore(os.path.join(self.data_dir, "chains"))
+        self.radios = RadioBook(os.path.join(self.data_dir, "radios.json"))
         self.sites = SiteStore(os.path.join(self.data_dir, "sites"))
         self.llm = EndpointStore(os.path.join(self.data_dir, "llm_endpoints.json"))
         self.llm.load()
@@ -112,7 +114,7 @@ class Runtime:
     def _discover_hardware(self) -> None:
         try:
             from ..devices.pluto import PlutoDevice
-            for dev in PlutoDevice.discover():
+            for dev in PlutoDevice.discover(book=tuple(self.radios.uris())):
                 self._register(dev)
         except Exception:  # noqa: BLE001 - hardware discovery is best-effort
             pass
@@ -152,7 +154,8 @@ class Runtime:
             return result
 
         try:
-            found = PlutoDevice.discover(prefer=prefer, measure=measure)
+            found = PlutoDevice.discover(prefer=prefer, measure=measure,
+                                         book=tuple(self.radios.uris()))
         except Exception as exc:  # noqa: BLE001
             result["errors"].append({"uri": "(survey)", "error": str(exc)})
             return result
@@ -194,7 +197,7 @@ class Runtime:
         mine = {getattr(d, "uri", None): did
                 for did, d in self.devices.items() if getattr(d, "uri", None)}
         probes = []
-        for uri in discovery.candidate_uris():
+        for uri in discovery.candidate_uris(book=tuple(self.radios.uris())):
             if uri in mine:
                 held = discovery.TransportProbe(
                     uri=uri, reachable=True,
@@ -214,6 +217,79 @@ class Runtime:
                              "because the USB backend is exclusive")
             out["probes"].append(d)
         return out
+
+    def forget_device(self, device_id: str) -> dict:
+        """Drop a radio from this session.
+
+        Discovery will find it again on the next scan — this removes the entry,
+        not the hardware. Saved addresses are managed separately so that
+        forgetting a device does not quietly unlearn where it lives.
+        """
+        dev = self.device(device_id)
+        if getattr(dev, "kind", "") == "simulated_pluto_plus":
+            raise ValueError("the simulated radio is always available and "
+                             "cannot be removed")
+        try:
+            dev.disconnect()
+        except Exception:  # noqa: BLE001 - forgetting must not be blockable
+            pass
+        self.devices.pop(device_id, None)
+        self.device_locks.pop(device_id, None)
+        self.calibration.pop(device_id, None)
+        self.safety.audit("device_forgotten", device=device_id)
+        return {"forgotten": device_id}
+
+    def switch_transport(self, device_id: str, uri: str) -> dict:
+        """Reach the same radio a different way.
+
+        Calibration and any in-flight scan belong to the device entry, so this
+        replaces the entry rather than mutating it, and refuses while a scan is
+        running rather than silently reattaching underneath one.
+        """
+        from ..devices.pluto import PlutoDevice
+        dev = self.device(device_id)
+        if getattr(dev, "kind", "") == "simulated_pluto_plus":
+            raise ValueError("the simulated radio has no transports")
+        live = [sid for sid, sc in self.scans.items()
+                if sc.get("device_id") == device_id and not sc.get("finalized")]
+        if live:
+            raise ValueError(f"{device_id} has an unfinished scan ({live[0]}); "
+                             "finalize or abandon it before switching transport")
+        target = PlutoDevice(uri)
+        target.connect()                    # fail before tearing anything down
+        old_discovery = getattr(dev, "discovery", {}) or {}
+        self.forget_device(device_id)
+        target.discovery = {**old_discovery, "uri": uri,
+                            "reason": f"switched by operator to {uri}"}
+        self._register(target)
+        self.safety.audit("device_transport_switched",
+                          device=target.device_id, uri=uri, was=device_id)
+        return self._describe_device(target)
+
+    # -- saved radio addresses (FR-DEV-002) ---------------------------------
+    def list_radio_addresses(self) -> list[dict]:
+        import os as _os
+        pinned = _os.environ.get("FORGE_VISION_PLUTO_URIS", "").strip()
+        out = self.radios.list()
+        for e in out:
+            e["in_use"] = any(getattr(d, "uri", "") == e["uri"]
+                              for d in self.devices.values())
+        if pinned:
+            for e in out:
+                e["overridden_by_env"] = True
+        return out
+
+    def add_radio_address(self, address: str, label: str = "") -> dict:
+        entry = self.radios.add(address, label=label)
+        self.safety.audit("radio_address_added", uri=entry["uri"],
+                          label=entry["label"])
+        return entry
+
+    def update_radio_address(self, radio_id: str, fields: dict) -> dict:
+        return self.radios.update(radio_id, fields)
+
+    def remove_radio_address(self, radio_id: str) -> dict:
+        return self.radios.remove(radio_id)
 
     def device(self, device_id: str):
         if device_id not in self.devices:
@@ -1269,9 +1345,29 @@ class Runtime:
         return {**cfg, "measurements": out}
 
     def _describe_device(self, dev) -> dict:
+        from ..devices import discovery
         d = dev.describe()
         # the UI must never offer a waveform this radio cannot transmit
         d["compatible_waveforms"] = dev.compatible_waveforms(CATALOG)
+        # How the radio is attached, in terms an operator reads rather than a
+        # libiio URI: the same board over Ethernet and over USB behaves very
+        # differently, and the dashboard should not make you infer which from
+        # the device id.
+        uri = getattr(dev, "uri", "")
+        info = getattr(dev, "discovery", {}) or {}
+        alts = info.get("alternatives", [])
+        d["link"] = {
+            "uri": uri,
+            "kind": discovery.uri_kind(uri) if uri else "simulated",
+            "address": discovery.uri_address(uri),
+            "throughput_mb_s": next(
+                (t.get("throughput_mb_s") for t in alts if t.get("uri") == uri),
+                None),
+            "chosen_because": info.get("reason", ""),
+            "alternatives": [
+                {k: t.get(k) for k in ("uri", "kind", "throughput_mb_s", "error")}
+                for t in alts if t.get("uri") != uri],
+        }
         return d
 
     def set_caps_profile(self, device_id: str, profile: str) -> dict:

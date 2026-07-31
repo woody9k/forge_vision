@@ -349,3 +349,38 @@ def test_position_source_api(client):
     bad = client.post("/api/position/source", json={"kind": "telepathy"})
     assert bad.status_code == 422, "unknown source kind must fail validation"
     assert "kind" in json.dumps(bad.json())
+
+
+# -- radios: managed by clicking, not by editing a config file (FR-DEV-002) --
+def test_radio_address_crud(client):
+    assert client.get("/api/radios").json() == []
+    r = client.post("/api/radios", json={"address": "pluto.boblab.net",
+                                         "label": "Bench"}).json()
+    assert r["uri"] == "ip:pluto.boblab.net"
+    listed = client.get("/api/radios").json()
+    assert [e["label"] for e in listed] == ["Bench"]
+    assert listed[0]["in_use"] is False
+
+    client.post(f"/api/radios/{r['radio_id']}/update", json={"label": "Bench Pluto+"})
+    assert client.get("/api/radios").json()[0]["label"] == "Bench Pluto+"
+
+    assert client.post(f"/api/radios/{r['radio_id']}/delete").status_code == 200
+    assert client.get("/api/radios").json() == []
+
+
+def test_an_address_is_required(client):
+    assert client.post("/api/radios", json={"address": ""}).status_code == 422
+    assert client.post("/api/radios", json={"addres": "typo"}).status_code == 422
+
+
+def test_the_simulated_radio_cannot_be_forgotten(client):
+    """It is always available, so removing it would just be a broken list."""
+    r = client.post("/api/devices/sim-pluto-0/forget")
+    assert r.status_code == 400
+    assert "cannot be removed" in r.json()["detail"]
+
+
+def test_devices_report_how_they_are_attached(client):
+    d = client.get("/api/status").json()["devices"][0]
+    assert d["link"]["kind"] == "simulated"
+    assert "alternatives" in d["link"]
