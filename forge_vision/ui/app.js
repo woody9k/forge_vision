@@ -92,6 +92,57 @@ function renderDashRadios(devices) {
 }
 
 // Hardware: the same radios, with the controls that change them.
+// The settings line above shows what the radio was *asked* for. This says
+// whether it still holds them. "Not checked" is rendered as its own state
+// rather than collapsing into "fine", because a stale reading and a confirmed
+// one are different claims (rule 3).
+function syncLine(d) {
+  if (!d.connected) return "";
+  const s = d.sync;
+  if (!s) {
+    return `<br><span class="tag" style="background:#1a1a20;border:1px solid #333;
+      color:#888">radio state not yet checked</span>`;
+  }
+  if (s.readable === false) {
+    return `<br><span class="tag" style="background:#2b2410;border:1px solid #5c4c1c;
+      color:#e8c96a">cannot read radio state${
+        s.error ? " — " + esc(s.error) : ""}</span>`;
+  }
+  const age = s.checked_at
+    ? Math.max(0, Math.round(Date.now() / 1000 - s.checked_at)) : null;
+  if (s.in_sync) {
+    return `<br><span class="tag" style="background:#12241d;border:1px solid #1f4a38;
+      color:#86dfc0">radio matches these settings${
+        age !== null ? ` · checked ${age}s ago` : ""}</span>`;
+  }
+  const rows = (s.drift || []).map((x) =>
+    `<div><code>${esc(x.field)}</code>: asked for <b>${esc(String(x.requested))}</b>,
+     radio has <b>${esc(String(x.actual))}</b></div>`).join("");
+  return `<br><span class="tag" style="background:#1c1116;border:1px solid #3a2028;
+      color:#a06070;display:block;padding:6px 8px">
+      <b>The radio is not holding these settings.</b>${
+        age !== null ? ` Checked ${age}s ago.` : ""}
+      ${rows}
+      <button onclick="resyncDevice('${esc(d.device_id)}')">Adopt the radio's
+        values</button>
+      <span class="mut">Captures record what the radio actually had, so this
+        does not corrupt data — but the controls above are describing something
+        the radio is not doing.</span>
+    </span>`;
+}
+
+window.resyncDevice = async (id) => {
+  try {
+    const r = await api(`/api/devices/${id}/resync`, { method: "POST" });
+    if (r.note) alert(r.note);
+    if (r.tx_revoked) alert("Transmit permission was withdrawn: the approved "
+      + "configuration no longer describes this radio.");
+  } catch (e) {
+    alert("Resync failed: " + String(e.message || e));
+  }
+  refreshStatus();
+};
+
 function renderDeviceCards(devices) {
   if (!$("device-list")) return;
   $("device-list").innerHTML = devices.map((d) => {
@@ -109,6 +160,7 @@ function renderDeviceCards(devices) {
     <div class="devcard">
       <div class="devmain">${linkLine(d)}<br>
         <span class="mut">${settingsLine(d)}</span>
+        ${syncLine(d)}
         <details>
           <summary>capabilities &amp; notes</summary>
           <span class="mut">
