@@ -38,7 +38,7 @@ document.querySelectorAll("nav button").forEach((b) => {
     if (b.dataset.tab === "library") refreshLibrary();
     if (b.dataset.tab === "safety") refreshSafety();
     if (b.dataset.tab === "dashboard") refreshStatus();
-    if (b.dataset.tab === "antenna") refreshComponents();
+    if (b.dataset.tab === "hardware") refreshComponents();
     if (b.dataset.tab === "world") refreshSites();
     if (b.dataset.tab === "sage") refreshSage();
   };
@@ -56,30 +56,48 @@ function setTxIndicator(safety) {
   }
 }
 
-async function refreshStatus() {
-  try {
-    STATUS = await api("/api/status");
-  } catch (e) { return; }
-  setTxIndicator(STATUS.safety);
-  renderDashboard();
-  fillSelectors();
-  refreshJobs();
-  refreshChain();
-  refreshRxProtection();
-  refreshPositionUi();
+const LINK_LABEL = { network: "Ethernet", usb: "USB",
+                     "usb-gadget": "USB (network gadget)",
+                     simulated: "Simulated" };
+
+function linkLine(d) {
+  const L = d.link || { kind: "simulated" };
+  const speed = L.throughput_mb_s ? `${L.throughput_mb_s} MB/s` : "";
+  return `<span class="dot ${d.connected ? "on" : "off"}"></span>
+    <b>${esc(d.kind === "simulated_pluto_plus" ? "Simulated radio" : "Pluto")}</b>
+    <span class="linkbadge link-${esc(L.kind)}">${esc(LINK_LABEL[L.kind] || L.kind)}</span>
+    ${L.address ? `<span class="addr">${esc(L.address)}</span>` : ""}
+    ${speed ? `<span class="mut"> · ${esc(speed)}</span>` : ""}
+    ${d.tx_enabled ? '<span class="tag" style="background:#57120a;color:#ffb4a4">TX ON</span>' : ""}`;
 }
 
-function renderDashboard() {
-  const s = STATUS;
-  const LINK_LABEL = { network: "Ethernet", usb: "USB",
-                       "usb-gadget": "USB (network gadget)",
-                       simulated: "Simulated" };
-  $("device-list").innerHTML = s.devices.map((d) => {
+function settingsLine(d) {
+  return `${fmtHz(d.config.center_frequency_hz)} ·
+    ${(d.config.sample_rate_hz / 1e6).toFixed(2)} MSPS ·
+    RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB`;
+}
+
+// Dashboard: what is in force, with no way to change it from here.
+function renderDashRadios(devices) {
+  if (!$("dash-radio")) return;
+  const live = devices.filter((d) => d.connected);
+  const shown = live.length ? live : devices;
+  $("dash-radio").innerHTML = shown.map((d) => `
+    <div class="devcard">
+      <div class="devmain">${linkLine(d)}<br>
+        <span class="mut">${settingsLine(d)}</span>
+        ${d.connected ? "" : '<br><span class="mut">not connected</span>'}
+      </div>
+    </div>`).join("") || '<span class="mut">no radios</span>';
+}
+
+// Hardware: the same radios, with the controls that change them.
+function renderDeviceCards(devices) {
+  if (!$("device-list")) return;
+  $("device-list").innerHTML = devices.map((d) => {
     const L = d.link || { kind: "simulated" };
-    const speed = L.throughput_mb_s ? `${L.throughput_mb_s} MB/s` : "";
     // One button per genuinely different kind of link, fastest of each, and
-    // never the kind we are already using — offering "use Ethernet" while on
-    // Ethernet is noise, and mDNS names can resolve to a link we already have.
+    // never the kind we are already using.
     const byKind = new Map();
     for (const a of (L.alternatives || [])) {
       if (a.error || a.kind === L.kind) continue;
@@ -89,17 +107,8 @@ function renderDashboard() {
     const alts = [...byKind.values()];
     return `
     <div class="devcard">
-      <div class="devmain">
-        <span class="dot ${d.connected ? "on" : "off"}"></span>
-        <b>${esc(d.kind === "simulated_pluto_plus" ? "Simulated radio" : "Pluto")}</b>
-        <span class="linkbadge link-${esc(L.kind)}">${esc(LINK_LABEL[L.kind] || L.kind)}</span>
-        ${L.address ? `<span class="addr">${esc(L.address)}</span>` : ""}
-        ${speed ? `<span class="mut"> · ${esc(speed)}</span>` : ""}
-        ${d.tx_enabled ? '<span class="tag" style="background:#57120a;color:#ffb4a4">TX ON</span>' : ""}
-        <br>
-        <span class="mut">${fmtHz(d.config.center_frequency_hz)} ·
-          ${(d.config.sample_rate_hz / 1e6).toFixed(2)} MSPS ·
-          RX ${d.config.rx_gain_db} dB · TX ${d.config.tx_gain_db} dB</span>
+      <div class="devmain">${linkLine(d)}<br>
+        <span class="mut">${settingsLine(d)}</span>
         <details>
           <summary>capabilities &amp; notes</summary>
           <span class="mut">
@@ -124,6 +133,26 @@ function renderDashboard() {
           : `<button onclick="forgetDevice('${esc(d.device_id)}')">Forget</button>`}
       </div>
     </div>`; }).join("");
+}
+
+async function refreshStatus() {
+  try {
+    STATUS = await api("/api/status");
+  } catch (e) { return; }
+  setTxIndicator(STATUS.safety);
+  renderDashboard();
+  fillSelectors();
+  refreshJobs();
+  refreshChain();
+  refreshRxProtection();
+  refreshPositionUi();
+}
+
+function renderDashboard() {
+  const s = STATUS;
+  renderDeviceCards(s.devices);
+  renderDashRadios(s.devices);
+  renderAttention(s);
 
   const st = s.storage, sf = s.safety;
   $("system-info").innerHTML = `
@@ -499,12 +528,14 @@ $("chain-config-save").onclick = async () => {
   refreshChain();
 };
 
-// "manage them in Antenna Lab" link on the dashboard
-document.querySelectorAll("[data-goto]").forEach((a) => {
-  a.onclick = (ev) => {
-    ev.preventDefault();
-    document.querySelector(`nav button[data-tab="${a.dataset.goto}"]`).click();
-  };
+// Cross-page links. Delegated rather than bound once at load, because several
+// of these are rendered into panels that redraw on every status poll.
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest("[data-goto]");
+  if (!a) return;
+  ev.preventDefault();
+  const btn = document.querySelector(`nav button[data-tab="${a.dataset.goto}"]`);
+  if (btn) btn.click();
 });
 
 $("atten-save").onclick = async () => {
@@ -519,14 +550,52 @@ async function refreshRxProtection() {
   let c;
   try { c = await api(`/api/safety/rx_protection?device_id=${encodeURIComponent(dev)}`); }
   catch (e) { return; }
-  const cls = { critical: "err", warn: "warn", ok: "" }[c.severity];
-  $("rx-protection").innerHTML = c.severity === "ok"
-    ? `<div class="mut">Estimated ${c.rx_input_dbm} dBm at the receive port —
-       within safe limits (damage above ${c.thresholds.damage_dbm} dBm).</div>`
-    : `<div class="alert ${cls}"><b>${c.severity === "critical"
-        ? "Receiver at risk" : "Receive path warning"}</b> —
-       estimated ${c.rx_input_dbm} dBm at the port.<br>
-       ${c.warnings.map(esc).join("<br>")}</div>`;
+
+  // This check is a *prediction*: it assumes a transmit at full output with
+  // whatever isolation has been declared. Until the platform is armed no such
+  // transmit can happen, so at rest it is pre-flight advice, not an alarm.
+  // Painting it red on an idle bench trains an operator to ignore red — which
+  // is a way of hiding the problem, not surfacing it.
+  const armed = !!(STATUS.safety && STATUS.safety.armed);
+  const txLive = !!(STATUS.safety && STATUS.safety.tx_active);
+  const imminent = armed || txLive;
+
+  if (c.severity === "ok") {
+    $("rx-protection").innerHTML =
+      `<div class="mut">Receive path: estimated ${c.rx_input_dbm} dBm at the port
+       if you transmit — within safe limits (damage above
+       ${c.thresholds.damage_dbm} dBm).</div>`;
+    return;
+  }
+  const cls = imminent ? (c.severity === "critical" ? "err" : "warn") : "warn";
+  const head = imminent
+    ? (c.severity === "critical" ? "Receiver at risk — TX is live"
+                                 : "Receive path warning — TX is live")
+    : "Before you transmit";
+  const lead = imminent
+    ? `estimated ${c.rx_input_dbm} dBm at the port.`
+    : `this configuration would put an estimated ${c.rx_input_dbm} dBm at the
+       receive port. Nothing is transmitting, so nothing is at risk yet.`;
+  $("rx-protection").innerHTML =
+    `<div class="alert ${cls}"><b>${esc(head)}</b> — ${lead}<br>
+     ${c.warnings.map(esc).join("<br>")}
+     <br><span class="mut">Declare the isolation between TX and RX in
+     <a href="#" data-goto="hardware">Hardware</a>.</span></div>`;
+}
+
+// Things that are wrong *now*, as opposed to things that would be wrong if you
+// transmitted. Kept separate so a prediction never masquerades as a fault.
+function renderAttention(s) {
+  if (!$("dash-attention")) return;
+  const items = [];
+  if (!s.devices.some((d) => d.connected && d.kind !== "simulated_pluto_plus")) {
+    items.push(["warn", `No radio is connected. <a href="#" data-goto="hardware">Set one up</a>.`]);
+  }
+  if (s.storage && s.storage.low_space_warning) {
+    items.push(["err", "Disk space is low; captures are immutable and accumulate."]);
+  }
+  $("dash-attention").innerHTML = items.map(
+    ([c, t]) => `<div class="alert ${c}">${t}</div>`).join("");
 }
 
 /* ---------- hardware rescan ---------- */

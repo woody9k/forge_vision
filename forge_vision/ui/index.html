@@ -16,7 +16,7 @@
     <button data-tab="scan">Scan Studio</button>
     <button data-tab="world">World View</button>
     <button data-tab="sage">SAGE</button>
-    <button data-tab="antenna">Antenna Lab</button>
+    <button data-tab="hardware">Hardware</button>
     <button data-tab="library">Experiments</button>
     <button data-tab="safety">Safety</button>
   </nav>
@@ -28,27 +28,14 @@
 
 <main>
   <!-- ============ DASHBOARD ============ -->
+  <!-- Read-only by design. Anything that changes hardware state lives on
+       Hardware; anything changed while working lives with the work. -->
   <section id="tab-dashboard" class="tab active">
     <div class="grid2">
       <div class="panel">
-        <h2>Radios <span class="mut">— what the platform can talk to</span></h2>
-        <div id="device-list"></div>
-        <div class="toolbar" style="margin-bottom:6px">
-          <button id="rescan-btn" class="primary">Scan for radios</button>
-          <span class="mut">checks USB and every saved address, then picks the
-            fastest way in</span>
-          <span id="rescan-status" class="mut"></span>
-        </div>
-        <div class="subhead">Saved addresses
-          <span class="mut">— where to look besides USB</span></div>
-        <div id="radio-book"></div>
-        <div class="toolbar" style="margin-bottom:0">
-          <label>Address <input id="radio-addr" type="text" size="22"
-            placeholder="pluto.boblab.net or 192.168.99.222"></label>
-          <label>Name <input id="radio-label" type="text" size="12"
-            placeholder="bench Pluto"></label>
-          <button id="radio-add">Add</button>
-        </div>
+        <h2>Active radio
+          <span class="mut">— <a href="#" data-goto="hardware">set up</a></span></h2>
+        <div id="dash-radio"></div>
       </div>
       <div class="panel">
         <h2>System</h2>
@@ -57,27 +44,25 @@
     </div>
     <div class="grid2">
       <div class="panel">
+        <h2>Signal path <span class="mut">— recorded with every capture ·
+          <a href="#" data-goto="hardware">set up</a></span></h2>
+        <div id="chain-summary" class="mut"></div>
+      </div>
+      <div class="panel">
+        <h2>Needs attention</h2>
+        <div id="dash-attention"></div>
+        <div id="rx-protection"></div>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
         <h2>Processing queue</h2>
         <div id="job-list"></div>
       </div>
       <div class="panel">
-        <h2>Active RF chain <span class="mut">— recorded with every experiment</span></h2>
-        <div id="chain-summary" class="mut"></div>
-        <p class="mut" style="margin:6px 0 0">
-          Manage antennas, cables and saved configurations in
-          <a href="#" data-goto="antenna">Antenna Lab</a>.</p>
-        <h2 style="margin-top:12px">Receive-path protection</h2>
-        <div class="toolbar">
-          <label>Declared path attenuation (dB)
-            <input id="atten-db" type="number" value="0" step="5" style="width:80px"></label>
-          <button id="atten-save">Declare</button>
-        </div>
-        <div id="rx-protection"></div>
+        <h2>Recent experiments</h2>
+        <div id="recent-experiments"></div>
       </div>
-    </div>
-    <div class="panel">
-      <h2>Recent experiments</h2>
-      <div id="recent-experiments"></div>
     </div>
   </section>
 
@@ -324,7 +309,28 @@
   </section>
 
   <!-- ============ ANTENNA LAB ============ -->
-  <section id="tab-antenna" class="tab">
+  <section id="tab-hardware" class="tab">
+
+    <div class="panel">
+      <h2>Radios <span class="mut">— what the platform can talk to</span></h2>
+      <div id="device-list"></div>
+      <div class="toolbar" style="margin-bottom:6px">
+        <button id="rescan-btn" class="primary">Scan for radios</button>
+        <span class="mut">checks USB and every saved address, then picks the
+          fastest way in</span>
+        <span id="rescan-status" class="mut"></span>
+      </div>
+      <div class="subhead">Saved addresses
+        <span class="mut">— where to look besides USB</span></div>
+      <div id="radio-book"></div>
+      <div class="toolbar" style="margin-bottom:0">
+        <label>Address <input id="radio-addr" type="text" size="22"
+          placeholder="pluto.boblab.net or 192.168.99.222"></label>
+        <label>Name <input id="radio-label" type="text" size="12"
+          placeholder="bench Pluto"></label>
+        <button id="radio-add">Add</button>
+      </div>
+    </div>
 
     <!-- what is in use right now: the thing every reading depends on -->
     <div class="panel">
@@ -335,6 +341,14 @@
         <input id="chain-config-name" type="text" size="24"
                placeholder="name this configuration…">
         <button id="chain-config-save" class="primary">Save as configuration</button>
+      </div>
+      <div class="subhead">Transmit-to-receive isolation
+        <span class="mut">— a physical claim about this patching</span></div>
+      <div class="toolbar" style="margin-bottom:0">
+        <label>Declared path attenuation (dB)
+          <input id="atten-db" type="number" value="0" step="5" style="width:80px"></label>
+        <button id="atten-save">Declare</button>
+        <span class="mut">inline attenuators plus antenna isolation between TX and RX</span>
       </div>
     </div>
 
