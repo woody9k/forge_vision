@@ -169,6 +169,31 @@ enumerating on a C-to-C cable. Model reports `NanoVNA-F_V2`, firmware 0.6.2,
 - The instrument always returns an S21 column even with port 2 open, so a
   one-port antenna sweep must declare `ports=1` or it stores a column of noise
   labelled as insertion loss.
+- **Phase is retained** (`s11_ri` / `s21_ri`, complex as `[re, im]`). The first
+  cut stored only magnitudes, which meant electrical delay — a phase quantity —
+  could not be computed from a saved sweep and the cable had to be re-measured.
+- **Electrical delay aliases, and one sweep cannot tell.** Unwrapping assumes
+  under π of phase per step, capping the measurable delay at `1/(2·Δf)`. Past
+  that, a long cable reports a *short* delay with a **perfectly clean linear
+  fit** — 40 ns sampled every 23 MHz reads 3.5 ns at zero residual, with no
+  symptom distinguishing it from a genuinely short cable. `analyze_delay()`
+  therefore sets `alias_checked: False` and never claims otherwise;
+  `delays_agree()` settles it by comparing two sweeps at different point
+  counts, which fold differently. `vna_measure_delay()` does that pair and
+  writes `nominal_delay_ns` **only** when they agree — a disagreement means
+  the true delay is longer than both, so storing the smaller number would be
+  inventing one. An early version of this check tested the *measured* delay
+  against the limit, which can never fire, because aliasing is precisely what
+  makes the measured value small. Do not reintroduce that.
+- The instrument reports **conjugate phase** (it rises with frequency), so a
+  naive group-delay fit comes out negative. A passive cable cannot advance a
+  signal, so the magnitude is the physical answer and the direction is
+  recorded as the convention observation it is.
+- A thru calibration zeroes whatever was connected during it, so calibrating
+  through a jumper subtracts that jumper from every later measurement — about
+  1 ns for an 8 in cable, which is ~0.15 m of two-way range. The correction is
+  an operator declaration (`reference_plane_ns`), recorded in the component
+  notes as an assumption rather than folded in silently.
 - The VNA is **not** gated by `SafetyController`. Its source is fixed-level
   (~ −9 dBm), is not operator-controllable, and free-runs whenever the
   instrument is powered, so the TX fingerprint has nothing to bind to. Every

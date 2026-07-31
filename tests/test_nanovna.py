@@ -278,6 +278,129 @@ def test_residual_needs_enough_points_to_judge():
         analyze_thru_residual([1e9, 2e9], [1 + 0j, 1 + 0j])
 
 
+# -- electrical delay --------------------------------------------------------
+
+def _delay_line(tau_ns, points, lo=700e6, hi=3e9, mag=0.5, conjugate=True):
+    """Synthetic S21 for an ideal delay line, in the instrument's convention."""
+    step = (hi - lo) / (points - 1)
+    freqs = [lo + i * step for i in range(points)]
+    sign = 1 if conjugate else -1
+    s21 = [cmath.rect(mag, sign * 2 * math.pi * f * tau_ns * 1e-9) for f in freqs]
+    return freqs, s21
+
+
+def test_delay_recovers_a_known_delay_line():
+    from forge_vision.rfcomponents.touchstone import analyze_delay
+    f, s21 = _delay_line(14.0, 301)
+    r = analyze_delay(f, s21)
+    assert r["delay_ns"] == pytest.approx(14.0, abs=0.01)
+    assert r["usable"] is True
+    assert r["fit_residual_rad"] < 1e-6
+
+
+def test_delay_is_positive_whichever_way_the_phase_runs():
+    """A passive cable cannot advance a signal; the sign is a convention."""
+    from forge_vision.rfcomponents.touchstone import analyze_delay
+    for conj in (True, False):
+        f, s21 = _delay_line(14.0, 301, conjugate=conj)
+        r = analyze_delay(f, s21)
+        assert r["delay_ns"] == pytest.approx(14.0, abs=0.01)
+    assert "conjugate" in analyze_delay(*_delay_line(14.0, 301))["phase_convention"]
+
+
+def test_delay_refuses_an_open_port(monkeypatch):
+    """With port 2 open, S21 is noise — and noise has a phase slope too."""
+    from forge_vision.rfcomponents.touchstone import analyze_delay
+    import random
+    random.seed(11)
+    f = [700e6 + i * 23e6 for i in range(101)]
+    noise = [complex(random.gauss(0, 0.002), random.gauss(0, 0.002)) for _ in f]
+    r = analyze_delay(f, noise)
+    assert r["usable"] is False
+    assert "open port" in r["note"]
+
+
+def test_delay_never_claims_to_have_checked_aliasing():
+    """A single sweep cannot rule out phase wrap; it must not imply it did."""
+    from forge_vision.rfcomponents.touchstone import analyze_delay
+    f, s21 = _delay_line(14.0, 301)
+    r = analyze_delay(f, s21)
+    assert r["alias_checked"] is False
+    assert "aliasing limit" in r["note"]
+
+
+def test_an_aliased_sweep_looks_perfectly_clean():
+    """The reason a single sweep cannot self-check: no symptom is visible."""
+    from forge_vision.rfcomponents.touchstone import analyze_delay
+    f, s21 = _delay_line(40.0, 101)          # limit here is ~21.7 ns
+    r = analyze_delay(f, s21)
+    assert r["delay_ns"] < 20                 # folded down, badly wrong
+    assert r["fit_residual_rad"] < 1e-6       # and looks flawless doing it
+
+
+def test_cross_check_confirms_an_unaliased_delay():
+    from forge_vision.rfcomponents.touchstone import analyze_delay, delays_agree
+    a = analyze_delay(*_delay_line(14.0, 101))
+    b = analyze_delay(*_delay_line(14.0, 301))
+    out = delays_agree(a, b)
+    assert out["agree"] is True and out["checked"] is True
+    assert out["delay_ns"] == pytest.approx(14.0, abs=0.01)
+
+
+def test_cross_check_catches_aliasing_a_single_sweep_cannot():
+    from forge_vision.rfcomponents.touchstone import analyze_delay, delays_agree
+    a = analyze_delay(*_delay_line(40.0, 101))   # aliases
+    b = analyze_delay(*_delay_line(40.0, 301))   # does not
+    out = delays_agree(a, b)
+    assert out["agree"] is False
+    assert out["delay_ns"] is None               # no number is offered
+    assert "aliased" in out["note"]
+
+
+def test_cross_check_refuses_two_sweeps_that_share_a_step():
+    """Same step folds identically, so agreement would prove nothing."""
+    from forge_vision.rfcomponents.touchstone import analyze_delay, delays_agree
+    a = analyze_delay(*_delay_line(40.0, 101))
+    b = analyze_delay(*_delay_line(40.0, 101))
+    out = delays_agree(a, b)
+    assert out["checked"] is False
+    assert "same point count" in out["note"]
+
+
+def test_measure_delay_writes_only_when_the_sweeps_agree(runtime, fake):
+    fake["kw"] = {"s21": cmath.rect(0.5, 0.3)}   # constant phase -> ~0 ns
+    comp = runtime.components.create("cable", "jumper")
+    r = runtime.vna_measure_delay(700e6, 3e9, comp_id=comp["component_id"])
+    assert r["cross_check"]["agree"] is True
+    assert r["adopted"] is True
+    assert r["component"]["nominal_delay_ns"] is not None
+
+
+def test_measure_delay_rejects_equal_point_counts(runtime, fake):
+    with pytest.raises(ValueError, match="different point counts"):
+        runtime.vna_measure_delay(700e6, 3e9, points_a=101, points_b=101)
+
+
+def test_measure_delay_is_audited(runtime, fake):
+    fake["kw"] = {"s21": cmath.rect(0.5, 0.3)}
+    runtime.vna_measure_delay(700e6, 3e9)
+    events = [e for e in runtime.safety.audit_tail(50)
+              if e["event"] == "vna_delay_measurement"]
+    assert events and events[-1]["points"] == [101, 301]
+
+
+def test_reference_plane_correction_is_recorded_as_an_assumption(runtime, fake):
+    """It is the operator's declaration, not something we measured."""
+    fake["kw"] = {"s21": cmath.rect(0.5, 0.3)}
+    comp = runtime.components.create("cable", "jumper")
+    r = runtime.vna_measure_delay(700e6, 3e9, comp_id=comp["component_id"],
+                                  reference_plane_ns=0.97)
+    notes = r["component"]["notes"]
+    assert "0.97" in notes
+    assert "assumption rather than a measurement" in notes
+    assert r["total_delay_ns"] == pytest.approx(r["delay_ns"] + 0.97, abs=1e-6)
+
+
 # -- storage and provenance --------------------------------------------------
 
 def test_instrument_sweep_records_that_the_cal_span_is_unknown(runtime, fake):
@@ -322,6 +445,28 @@ def test_two_port_sweep_does_store_s21(runtime, fake):
     assert vna["ports"] == 2
     assert vna["s21_db"] is not None
     assert "at_midband" in vna["s21_analysis"]
+
+
+def test_stored_sweep_retains_complex_values_not_just_magnitudes(runtime, fake):
+    """Delay is a phase question; storing only dB threw the answer away."""
+    comp = runtime.components.create("cable", "10 ft")
+    res = runtime.vna_sweep(700e6, 3e9, 101, ports=2,
+                            comp_id=comp["component_id"])
+    vna = res["component"]["vna"]
+    assert len(vna["s11_ri"]) == 101
+    assert len(vna["s21_ri"]) == 101
+    assert all(len(p) == 2 for p in vna["s21_ri"])
+    # and the delay analysis derived from it is stored alongside
+    assert "delay_analysis" in vna
+
+
+def test_one_port_sweep_stores_no_complex_s21(runtime, fake):
+    comp = runtime.components.create("antenna", "whip")
+    res = runtime.vna_sweep(700e6, 3e9, 101, ports=1,
+                            comp_id=comp["component_id"])
+    vna = res["component"]["vna"]
+    assert vna["s21_ri"] is None
+    assert "delay_analysis" not in vna
 
 
 def test_sweep_rejects_an_impossible_port_count(runtime, fake):

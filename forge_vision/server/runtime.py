@@ -607,6 +607,72 @@ class Runtime:
             lambda ctx: self.vna_sweep(ctx=ctx, **kwargs),
             params=dict(kwargs))
 
+    def vna_measure_delay(self, start_hz: float, stop_hz: float,
+                          port: str = "/dev/nanovna", points_a: int = 101,
+                          points_b: int = 301, comp_id: str = "",
+                          reference_plane_ns: float = 0.0) -> dict:
+        """Measure electrical delay, cross-checked against phase aliasing.
+
+        Sweeps the same span twice at different point counts. Aliasing folds a
+        long delay down by a whole number of cycles per frequency step, and
+        the fold depends on the step — so two steps agree only if neither
+        wrapped. A single sweep cannot establish this about itself: a 40 ns
+        cable sampled every 23 MHz reports 3.5 ns with a perfectly clean
+        linear fit, indistinguishable from a genuinely short one.
+
+        `nominal_delay_ns` is written only when the two sweeps agree. A
+        disagreement means at least one aliased and the true delay is longer
+        than both, which is a reason to report and re-sweep, not to store the
+        smaller number.
+        """
+        from ..rfcomponents import nanovna
+        from ..rfcomponents.touchstone import analyze_delay, delays_agree
+
+        if points_a == points_b:
+            raise ValueError(
+                "the two sweeps must use different point counts, or they "
+                "share a frequency step and would alias identically")
+
+        band = self._vna_band_check(start_hz, stop_hz)
+        with nanovna.NanoVNA(port) as vna:
+            ident = vna.identify()
+            a = vna.scan(start_hz, stop_hz, points_a)
+            b = vna.scan(start_hz, stop_hz, points_b)
+
+        da = analyze_delay(a["freqs_hz"], a["s21"])
+        db = analyze_delay(b["freqs_hz"], b["s21"])
+        check = delays_agree(da, db)
+
+        self.safety.audit(
+            "vna_delay_measurement", port=port,
+            instrument=ident.get("model", ""),
+            start_hz=float(start_hz), stop_hz=float(stop_hz),
+            points=[points_a, points_b], component=comp_id or None,
+            agree=check["agree"], profile=band["profile"],
+            inside_profile=band["inside_profile"])
+
+        out = {"instrument": ident, "band_check": band, "sweeps": [da, db],
+               "cross_check": check, "reference_plane_ns": reference_plane_ns,
+               "adopted": False}
+
+        if check["agree"]:
+            total = round(check["delay_ns"] + reference_plane_ns, 3)
+            out["delay_ns"] = check["delay_ns"]
+            out["total_delay_ns"] = total
+            if comp_id:
+                note = (f"electrical delay {total} ns from S21 phase slope over "
+                        f"{start_hz / 1e6:.1f}-{stop_hz / 1e6:.1f} MHz, "
+                        f"cross-checked at {points_a} and {points_b} points "
+                        f"(agree to {check['difference_ns']} ns, so the phase "
+                        f"did not alias)")
+                if reference_plane_ns:
+                    note += (f"; includes {reference_plane_ns} ns declared for "
+                             "the calibration reference plane, which is an "
+                             "operator assumption rather than a measurement")
+                out["component"] = self.components.set_delay(comp_id, total, note)
+                out["adopted"] = True
+        return out
+
     def vna_verify_calibration(self, start_hz: float, stop_hz: float,
                                points: int = 101, port: str = "/dev/nanovna") -> dict:
         """Measure a known thru and judge whether the calibration covers this span.

@@ -261,6 +261,34 @@ class VnaSweepRequest(Strict):
     comp_id: str = ""
 
 
+class AdoptDelayRequest(Strict):
+    """Take nominal delay from the S21 phase slope of an imported sweep.
+
+    `reference_plane_ns` is added to the measured figure. A thru calibration
+    defines whatever was connected during it as zero delay, so calibrating
+    through a jumper subtracts that jumper from every later measurement. Only
+    the operator knows what was on the ports, so this correction is theirs to
+    declare and is recorded as an assumption.
+    """
+    reference_plane_ns: float = Field(0.0, ge=-1000, le=1000)
+
+
+class VnaDelayRequest(Strict):
+    """Measure electrical delay with two sweeps, cross-checked for aliasing.
+
+    The point counts must differ: aliasing depends on the frequency step, so
+    two sweeps sharing a step would fold identically and agreeing would prove
+    nothing.
+    """
+    start_hz: float = Field(..., gt=0)
+    stop_hz: float = Field(..., gt=0)
+    points_a: int = Field(101, ge=3, le=301)
+    points_b: int = Field(301, ge=3, le=301)
+    comp_id: str = ""
+    reference_plane_ns: float = Field(0.0, ge=-1000, le=1000)
+    port: str = Field("/dev/nanovna", pattern=r"^/dev/[A-Za-z0-9_.\-/]+$")
+
+
 class VnaCalCheckRequest(Strict):
     """Verify a calibration covers a span by measuring a known thru."""
     start_hz: float = Field(..., gt=0)

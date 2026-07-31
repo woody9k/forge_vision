@@ -768,6 +768,16 @@ def adopt_measured_loss(comp_id: str, body: S.AdoptLossRequest = S.AdoptLossRequ
         raise _fail(exc)
 
 
+@app.post("/api/components/{comp_id}/adopt_delay")
+def adopt_measured_delay(comp_id: str, body: S.AdoptDelayRequest = S.AdoptDelayRequest()):
+    """Set nominal delay from the S21 phase slope of an imported sweep."""
+    try:
+        return runtime.components.adopt_measured_delay(
+            comp_id, body.reference_plane_ns)
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 @app.post("/api/components/{comp_id}/vna")
 async def import_vna(comp_id: str, file: UploadFile):
     """Import a NanoVNA touchstone (.s1p/.s2p) measurement (FR-RFC-003)."""
@@ -816,6 +826,18 @@ def vna_sweep_job(body: S.VnaSweepRequest):
         return runtime.vna_sweep_job(
             start_hz=body.start_hz, stop_hz=body.stop_hz, points=body.points,
             ports=body.ports, port=body.port, comp_id=body.comp_id).to_dict()
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/vna/measure_delay")
+def vna_measure_delay(body: S.VnaDelayRequest):
+    """Measure electrical delay from two sweeps, cross-checked for aliasing."""
+    try:
+        return runtime.vna_measure_delay(
+            start_hz=body.start_hz, stop_hz=body.stop_hz, port=body.port,
+            points_a=body.points_a, points_b=body.points_b,
+            comp_id=body.comp_id, reference_plane_ns=body.reference_plane_ns)
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 

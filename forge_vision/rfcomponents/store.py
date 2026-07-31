@@ -9,7 +9,7 @@ import os
 import time
 import uuid
 
-from .touchstone import (analyze_s11, analyze_s21, loss_at,
+from .touchstone import (analyze_delay, analyze_s11, analyze_s21, loss_at,
                          parse_touchstone)
 
 KINDS = ("antenna", "cable", "adapter", "attenuator", "filter", "amplifier",
@@ -245,6 +245,13 @@ class ComponentStore:
             "vswr": analysis["vswr"],
             "s21_db": ([round(20 * math.log10(max(abs(x), 1e-9)), 2)
                         for x in data["s21"]] if "s21" in data else None),
+            # Complex values, kept as [real, imag]. Magnitudes alone cannot
+            # answer a question about phase, and delay *is* a phase question —
+            # storing only dB threw away the one thing electrical delay is
+            # derived from, so a stored sweep had to be re-measured to get it.
+            "s11_ri": [[round(x.real, 6), round(x.imag, 6)] for x in data["s11"]],
+            "s21_ri": ([[round(x.real, 6), round(x.imag, 6)]
+                        for x in data["s21"]] if "s21" in data else None),
             "analysis": {k: analysis[k] for k in
                          ("bands", "best_match", "thresholds")},
         }
@@ -255,6 +262,62 @@ class ComponentStore:
             # its own measurement.
             comp["vna"]["s21_analysis"] = analyze_s21(data["freqs_hz"],
                                                       data["s21"])
+            try:
+                comp["vna"]["delay_analysis"] = analyze_delay(
+                    data["freqs_hz"], data["s21"])
+            except ValueError:
+                # Too few points to fit a slope. Delay is enrichment on top of
+                # the measurement, so its absence is a missing field, not a
+                # failed import — the sweep itself is still valid data.
+                pass
+        self._save(comp)
+        return comp
+
+    def set_delay(self, comp_id: str, delay_ns: float, note: str) -> dict:
+        """Record an electrical delay with the provenance that justifies it."""
+        comp = self.load(comp_id)
+        comp["nominal_delay_ns"] = round(float(delay_ns), 3)
+        comp["notes"] = (comp.get("notes", "") + "\n" + note).strip()
+        self._save(comp)
+        return comp
+
+    def adopt_measured_delay(self, comp_id: str,
+                             reference_plane_ns: float = 0.0) -> dict:
+        """Set nominal delay from the S21 phase slope of an imported sweep.
+
+        `reference_plane_ns` is added to the measured figure. A thru
+        calibration defines whatever was connected during it as zero, so a
+        calibration performed through a jumper has that jumper's delay
+        subtracted from every later measurement. The operator is the only one
+        who knows what was on the ports, so the correction is theirs to state
+        — and it is recorded in the notes as an assumption rather than folded
+        in silently, because it is not something this software measured.
+        """
+        comp = self.load(comp_id)
+        vna = comp.get("vna") or {}
+        delay = vna.get("delay_analysis")
+        if not delay:
+            raise ValueError(
+                f"{comp['name']} has no two-port (.s2p) measurement to take "
+                "electrical delay from")
+        if not delay.get("usable"):
+            raise ValueError(
+                f"{comp['name']}: the sweep cannot support a delay figure. "
+                + (delay.get("note") or ""))
+
+        measured = delay["delay_ns"]
+        total = round(measured + reference_plane_ns, 3)
+        comp["nominal_delay_ns"] = total
+        lo, hi = delay["span_hz"]
+        note = (f"electrical delay {total} ns from S21 phase slope over "
+                f"{lo / 1e6:.1f}-{hi / 1e6:.1f} MHz "
+                f"(measured {measured} ns")
+        if reference_plane_ns:
+            note += (f", plus {reference_plane_ns} ns declared for the "
+                     "calibration reference plane — an operator assumption, "
+                     "not a measurement")
+        note += ")"
+        comp["notes"] = (comp.get("notes", "") + "\n" + note).strip()
         self._save(comp)
         return comp
 

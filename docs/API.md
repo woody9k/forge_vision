@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785517428.7685828,
+    "time": 1785519011.3526506,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -251,7 +251,20 @@ RF component inventory.
   "claimed_band": "",
   "polarization": "",
   "created_at": 1785428596.1889236,
-  "has_vna": false
+  "has_vna": true,
+  "best_match": {
+   "freq_hz": 815000000.0,
+   "vswr": 1.052,
+   "s11_db": -31.92
+  },
+  "recommended_bands": [
+   {
+    "start_hz": 700000000.0,
+    "stop_hz": 3000000000.0,
+    "rating": "recommended",
+    "min_vswr": 1.05
+   }
+  ]
  },
  "... 4 total"
 ]
@@ -453,6 +466,20 @@ Save the working chain as a reusable named configuration.
 | `notes` | string | no | `""` |  |
 | `nominal_loss_db` | number | no | — |  |
 | `nominal_delay_ns` | number | no | — |  |
+
+### `POST /api/components/{comp_id}/adopt_delay`
+
+Take nominal delay from the S21 phase slope of an imported sweep.
+
+`reference_plane_ns` is added to the measured figure. A thru calibration
+defines whatever was connected during it as zero delay, so calibrating
+through a jumper subtracts that jumper from every later measurement. Only
+the operator knows what was on the ports, so this correction is theirs to
+declare and is recorded as an assumption.
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `reference_plane_ns` | number (>= -1000.0, <= 1000.0) | no | `0.0` |  |
 
 ### `POST /api/components/{comp_id}/adopt_loss`
 
@@ -732,6 +759,24 @@ Verify a calibration covers a span by measuring a known thru.
 | `points` | integer (>= 10.0, <= 301.0) | no | `101` |  |
 | `port` | string matching `^/dev/[A-Za-z0-9_.\-/]+$` | no | `"/dev/nanovna"` |  |
 
+### `POST /api/vna/measure_delay`
+
+Measure electrical delay with two sweeps, cross-checked for aliasing.
+
+The point counts must differ: aliasing depends on the frequency step, so
+two sweeps sharing a step would fold identically and agreeing would prove
+nothing.
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `start_hz` | number (> 0.0) | yes | — |  |
+| `stop_hz` | number (> 0.0) | yes | — |  |
+| `points_a` | integer (>= 3.0, <= 301.0) | no | `101` |  |
+| `points_b` | integer (>= 3.0, <= 301.0) | no | `301` |  |
+| `comp_id` | string | no | `""` |  |
+| `reference_plane_ns` | number (>= -1000.0, <= 1000.0) | no | `0.0` |  |
+| `port` | string matching `^/dev/[A-Za-z0-9_.\-/]+$` | no | `"/dev/nanovna"` |  |
+
 ### `POST /api/vna/sweep`
 
 Sweep the VNA, optionally storing the result against a component.
@@ -789,6 +834,7 @@ labelled as insertion loss.
 | GET | `/api/components` | Components |
 | POST | `/api/components` | Create Component |
 | GET | `/api/components/{comp_id}` | Component |
+| POST | `/api/components/{comp_id}/adopt_delay` | Adopt Measured Delay |
 | POST | `/api/components/{comp_id}/adopt_loss` | Adopt Measured Loss |
 | POST | `/api/components/{comp_id}/delete` | Delete Component |
 | POST | `/api/components/{comp_id}/update` | Update Component |
@@ -864,6 +910,7 @@ labelled as insertion loss.
 | POST | `/api/survey` | Survey |
 | POST | `/api/vna/calibration_check` | Vna Calibration Check |
 | GET | `/api/vna/discover` | Vna Discover |
+| POST | `/api/vna/measure_delay` | Vna Measure Delay |
 | GET | `/api/vna/status` | Vna Status |
 | POST | `/api/vna/sweep` | Vna Sweep |
 | POST | `/api/vna/sweep_job` | Vna Sweep Job |

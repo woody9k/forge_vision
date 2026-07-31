@@ -8,6 +8,7 @@ DB (dB-magnitude/angle-deg).
 
 from __future__ import annotations
 
+import cmath
 import math
 
 FREQ_UNITS = {"HZ": 1.0, "KHZ": 1e3, "MHZ": 1e6, "GHZ": 1e9}
@@ -123,6 +124,176 @@ def analyze_s21(freqs_hz: list, s21: list) -> dict:
         "at_highest": {"freq_hz": freqs_hz[hi_i], "loss_db": loss_db[hi_i]},
         "min_loss_db": min(loss_db),
         "max_loss_db": max(loss_db),
+    }
+
+
+def _unwrap(phases: list) -> list:
+    """Unwrap a phase sequence, assuming steps smaller than pi (see below)."""
+    out = [phases[0]]
+    for i in range(1, len(phases)):
+        d = phases[i] - phases[i - 1]
+        while d > math.pi:
+            d -= 2 * math.pi
+        while d < -math.pi:
+            d += 2 * math.pi
+        out.append(out[-1] + d)
+    return out
+
+
+def _fit_line(xs: list, ys: list) -> tuple:
+    """Least-squares slope and intercept for y = a*x + b."""
+    n = len(xs)
+    sx, sy = sum(xs), sum(ys)
+    sxx = sum(x * x for x in xs)
+    sxy = sum(x * y for x, y in zip(xs, ys))
+    denom = n * sxx - sx * sx
+    if denom == 0:
+        raise ValueError("cannot fit a line to a single frequency")
+    a = (n * sxy - sx * sy) / denom
+    return a, (sy - a * sx) / n
+
+
+def analyze_delay(freqs_hz: list, s21: list,
+                  min_magnitude_db: float = -30.0) -> dict:
+    """Electrical delay from the slope of S21 phase (FR-RFC-004).
+
+    Group delay is -dphi/dw. For a cable the phase is very nearly linear, so
+    the slope of a least-squares fit across the whole sweep is both the
+    delay and — through its residual — evidence of whether "a delay" was a
+    fair description of the part at all.
+
+    Two things make a delay number meaningless rather than merely imprecise,
+    and both are checked instead of assumed:
+
+    * **Not enough signal.** With port 2 open, S21 is noise, and noise has a
+      phase slope like anything else. Below `min_magnitude_db` the result is
+      marked unusable rather than reported (rule 1).
+    * **Phase aliasing.** Unwrapping assumes the true phase moves less than pi
+      between adjacent points, which caps the measurable delay at
+      `1 / (2 * step)`. A longer cable wraps past that and the fit reports a
+      *shorter* delay that is just as linear and just as clean — a 40 ns cable
+      sampled every 23 MHz reads 3.5 ns with zero residual. **A single sweep
+      cannot detect this**, because every symptom is indistinguishable from a
+      genuinely short cable. `unambiguous_max_ns` is returned so the caller
+      knows the ceiling, and `alias_checked` is False to say plainly that
+      nothing here has ruled it out. Comparing two sweeps at different
+      frequency steps is what settles it — see `delays_agree()`.
+
+    The sign is reported separately from the magnitude. A delay line is
+    `exp(-j*w*tau)` and should show *falling* phase, but this instrument
+    reports the conjugate (phase rises with frequency), which would otherwise
+    yield a negative delay. A passive cable cannot advance a signal, so the
+    magnitude is the physical answer and the direction is recorded as the
+    convention observation it is.
+    """
+    n = len(s21)
+    if n < 3 or len(freqs_hz) != n:
+        raise ValueError("need at least 3 matched points to fit a delay")
+
+    mags = [abs(x) for x in s21]
+    ordered = sorted(mags)
+    median_db = 20 * math.log10(max(ordered[n // 2], 1e-12))
+
+    phase = _unwrap([cmath.phase(x) for x in s21])
+    omega = [2 * math.pi * f for f in freqs_hz]
+    slope, intercept = _fit_line(omega, phase)
+    tau = -slope
+    resid = [p - (slope * w + intercept) for p, w in zip(phase, omega)]
+    resid_rms = math.sqrt(sum(r * r for r in resid) / n)
+
+    # point-wise group delay, as a spread rather than a second estimate
+    pointwise = []
+    for i in range(1, n):
+        dw = omega[i] - omega[i - 1]
+        if dw:
+            pointwise.append(-(phase[i] - phase[i - 1]) / dw)
+    pw_mean = sum(pointwise) / len(pointwise) if pointwise else 0.0
+    pw_var = (sum((x - pw_mean) ** 2 for x in pointwise) / len(pointwise)
+              if pointwise else 0.0)
+
+    step = (freqs_hz[-1] - freqs_hz[0]) / (n - 1)
+    unambiguous = 1.0 / (2 * step) if step else float("inf")
+
+    usable, notes = True, []
+    if median_db < min_magnitude_db:
+        usable = False
+        notes.append(
+            f"Median |S21| is {median_db:.1f} dB, below the {min_magnitude_db:.0f} dB "
+            "floor for a meaningful phase slope. This looks like an open port, "
+            "not a through path — the phase here is noise.")
+    notes.append(
+        f"Valid only if the true delay is under {unambiguous * 1e9:.1f} ns, the "
+        "aliasing limit for this frequency step. A longer part reads short and "
+        "looks equally clean, and one sweep cannot tell the difference — "
+        "compare two sweeps at different point counts to settle it.")
+    if abs(tau) > 0.8 * unambiguous:
+        usable = False
+        notes.append(
+            f"Measured {abs(tau) * 1e9:.2f} ns is close enough to that limit that "
+            "the phase has probably already wrapped. Re-sweep with more points.")
+    if resid_rms > 0.5:
+        notes.append(
+            f"Phase is not clean and linear (residual {resid_rms:.2f} rad rms), "
+            "so a single delay figure describes this part only loosely.")
+
+    return {
+        "delay_ns": round(abs(tau) * 1e9, 3),
+        "signed_slope_delay_ns": round(tau * 1e9, 3),
+        "phase_convention": ("standard (phase falls with frequency)" if tau > 0
+                             else "conjugate (phase rises with frequency)"),
+        "fit_residual_rad": round(resid_rms, 4),
+        "pointwise_mean_ns": round(abs(pw_mean) * 1e9, 3),
+        "pointwise_std_ns": round(math.sqrt(pw_var) * 1e9, 3),
+        "median_s21_db": round(median_db, 2),
+        "unambiguous_max_ns": round(unambiguous * 1e9, 3),
+        "alias_checked": False,     # a single sweep cannot establish this
+        "span_hz": [freqs_hz[0], freqs_hz[-1]],
+        "points": n,
+        "usable": bool(usable),
+        "note": " ".join(notes),
+    }
+
+
+def delays_agree(a: dict, b: dict, tolerance_ns: float = 0.5) -> dict:
+    """Cross-check two `analyze_delay` results taken at different steps.
+
+    Aliasing folds a long delay down by a whole number of cycles per step, and
+    the fold depends on the step — so two sweeps of the same part at different
+    point counts agree only if neither wrapped. This is the check a single
+    sweep cannot do for itself, and the reason `analyze_delay` refuses to
+    claim it has.
+
+    Agreement is evidence, not proof: two steps can in principle alias to the
+    same answer. It takes a contrived pair of values to do so, and the
+    alternative is reporting a number nothing has tested.
+    """
+    if not (a.get("usable") and b.get("usable")):
+        return {"agree": False, "checked": False,
+                "note": "At least one sweep could not support a delay figure, "
+                        "so there is nothing to cross-check."}
+    if a["points"] == b["points"]:
+        return {"agree": False, "checked": False,
+                "note": "Both sweeps used the same point count, so they share "
+                        "a frequency step and would alias identically. Use "
+                        "different point counts."}
+    diff = abs(a["delay_ns"] - b["delay_ns"])
+    agree = diff <= tolerance_ns
+    return {
+        "agree": bool(agree),
+        "checked": True,
+        "delay_ns": round((a["delay_ns"] + b["delay_ns"]) / 2, 3) if agree
+                    else None,
+        "difference_ns": round(diff, 3),
+        "tolerance_ns": tolerance_ns,
+        "compared": [{"points": a["points"], "delay_ns": a["delay_ns"]},
+                     {"points": b["points"], "delay_ns": b["delay_ns"]}],
+        "note": (f"Two sweeps at different frequency steps agree to "
+                 f"{diff:.3f} ns, so neither wrapped and the delay is "
+                 "unambiguous."
+                 if agree else
+                 f"Sweeps at different steps disagree by {diff:.3f} ns, which "
+                 "means at least one has aliased. The true delay is longer "
+                 "than both. Re-sweep with more points."),
     }
 
 

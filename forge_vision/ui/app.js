@@ -2122,6 +2122,23 @@ window.openComponent = async (id) => {
   // Only offer to adopt a measurement that actually exists.
   $("comp-adopt-loss").style.display = s21 ? "" : "none";
 
+  // Delay is only offerable when the stored sweep can actually support one —
+  // an open port 2 gives a phase slope through noise, which is not a delay.
+  const da = vna && vna.delay_analysis;
+  $("comp-adopt-delay").style.display = (da && da.usable) ? "" : "none";
+  const hint = $("comp-delay-hint");
+  if (da) {
+    hint.style.display = "";
+    hint.firstElementChild.innerHTML = da.usable
+      ? `Stored sweep gives ${da.delay_ns} ns from S21 phase slope. `
+        + `Single-sweep only — valid if the true delay is under `
+        + `${da.unambiguous_max_ns} ns, which this has not checked. `
+        + `<b>Measure delay</b> below sweeps twice and settles it.`
+      : esc(da.note);
+  } else {
+    hint.style.display = "none";
+  }
+
   renderBands(c);
   $("vna-panel").style.display = vna ? "" : "none";
   if (vna) drawVnaPlot(c, pinnedComp);
@@ -2256,6 +2273,60 @@ $("vna-sweep").onclick = async () => {
     vnaNotice(`Sweep failed: ${esc(String(e.message || e))}`, "bad");
   } finally {
     btn.disabled = false; btn.textContent = "Sweep into this component";
+  }
+};
+
+$("vna-delay").onclick = async () => {
+  if (!selectedComp) { alert("select a component first"); return; }
+  const body = {
+    start_hz: Number($("vna-start").value) * 1e6,
+    stop_hz: Number($("vna-stop").value) * 1e6,
+    points_a: 101, points_b: 301,
+    comp_id: selectedComp,
+    reference_plane_ns: Number($("vna-refplane").value) || 0,
+  };
+  const btn = $("vna-delay");
+  btn.disabled = true; btn.textContent = "Measuring… (two sweeps)";
+  try {
+    const r = await api("/api/vna/measure_delay", { method: "POST", body });
+    const cc = r.cross_check;
+    if (cc.agree) {
+      let msg = `<b>Electrical delay ${r.total_delay_ns} ns</b> — written to `
+        + `this component.<br>Cross-checked at ${cc.compared[0].points} and `
+        + `${cc.compared[1].points} points, agreeing to ${cc.difference_ns} ns, `
+        + `so the phase did not alias.`;
+      if (r.reference_plane_ns) {
+        msg += `<br><span class="mut">Measured ${r.delay_ns} ns plus `
+          + `${r.reference_plane_ns} ns you declared for the calibration `
+          + `reference plane — that part is an assumption, not a measurement.`
+          + `</span>`;
+      }
+      vnaNotice(msg, "ok");
+    } else {
+      // Disagreement means at least one sweep wrapped, so the true delay is
+      // longer than both. Storing the smaller number would be inventing one.
+      vnaNotice(`<b>Delay not established</b><br>${esc(cc.note)}<br>`
+        + `<span class="mut">Nothing was written to the component.</span>`,
+        "warn");
+    }
+    openComponent(selectedComp);
+  } catch (e) {
+    vnaNotice(`Delay measurement failed: ${esc(String(e.message || e))}`, "bad");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Measure delay into this component";
+  }
+};
+
+$("comp-adopt-delay").onclick = async () => {
+  if (!selectedComp) return;
+  const ref = Number($("vna-refplane").value) || 0;
+  try {
+    await api(`/api/components/${selectedComp}/adopt_delay`,
+      { method: "POST", body: { reference_plane_ns: ref } });
+    openComponent(selectedComp);
+  } catch (e) {
+    alert(String(e.message || e));
   }
 };
 

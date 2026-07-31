@@ -183,8 +183,17 @@ GET  /api/vna/discover              → serial ports that answered as a VNA
 GET  /api/vna/status                → model, firmware, battery, sweep, calibration
 POST /api/vna/sweep                 → sweep; attaches to a component if comp_id given
 POST /api/vna/sweep_job             → same, as a cancellable job
+POST /api/vna/measure_delay         → electrical delay, cross-checked for aliasing
 POST /api/vna/calibration_check     → measure a known thru, judge the calibration
 ```
+
+**Electrical delay needs two sweeps, and the API enforces that.** Phase
+unwrapping caps the measurable delay at `1/(2*step)`; past that a long cable
+reports a *short* delay with a perfectly clean linear fit, and no single sweep
+can tell the difference. `/api/vna/measure_delay` sweeps at two point counts
+(they fold differently) and writes `nominal_delay_ns` only when they agree. If
+`cross_check.agree` is false, **the true delay is longer than both figures** —
+report that, do not quote the smaller one.
 
 `ports` is **required judgement about the physical world, not a formatting
 choice**: `2` for a thru (a cable between both ports), `1` for reflection only
@@ -244,6 +253,17 @@ near-perfect VSWR and is a useless feedline. The `recommended` /
 attenuator, quote insertion loss instead. Measured on this bench: a 5.8 dB
 cable read −24 dB mean S11 while a low-loss thru read −16 dB on the same
 instrument — the lossier part looked better matched.
+
+**A delay figure is conditional on not having aliased.** `delay_analysis` on a
+stored sweep carries `alias_checked: false` and an `unambiguous_max_ns`
+ceiling: the number is valid only if the true delay is under it, and the sweep
+itself cannot establish that. Say so when quoting one, or use the
+cross-checked `/api/vna/measure_delay` figure instead.
+
+**A calibration reference plane is a declaration, not a measurement.** Where a
+delay or loss includes a `reference_plane_ns` correction, that part came from
+the operator saying what was connected during calibration. It is recorded in
+the component notes as an assumption; keep it labelled that way.
 
 **Cable loss is frequency-dependent, so a bare figure is not a measurement.**
 Insertion loss is always reported with the frequency it was taken at. Keep
