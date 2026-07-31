@@ -12,7 +12,7 @@ to that document — keep citing them, it is how coverage is tracked.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
-.venv/bin/python -m pytest tests/          # 309 tests, ~3 min
+.venv/bin/python -m pytest tests/          # 341 tests, ~3 min
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
@@ -345,6 +345,51 @@ capture code against this board:
   because it destroys the buffer before each capture, which flushes the queue
   outright — but anything that holds a buffer across a reconfiguration must
   discard four, or it will record samples the RF config never applied to.
+
+## Keeping the reported configuration honest about the radio
+
+`dev.config` is what was **asked for**. The radio is the authority on what it
+**has**, and the two come apart easily: the AD9361 driver clamps and quantizes
+silently, AGC overrides a gain the moment you write it, and a bench script or
+a second handle moves the board with no notification. `_apply()` writes and
+never reads back, so before this existed the UI could only ever show the
+request.
+
+- `read_hardware_config()` reads the radio; `sync_status()` compares. Measured
+  **~4 ms** for a full read-back over Ethernet, which is why a capture can
+  afford to verify rather than assume.
+- **Tolerance decides a boolean, never what is displayed.** Quantization is
+  not drift — a fractional-N LO landing 2 Hz off 921 MHz is the setting, as
+  the hardware can express it. `SYNC_TOLERANCES` in `devices/base.py` holds
+  the allowances; the actual value is always reported.
+- **`in_sync: None` means "not checked", which is not "fine".** An unreadable
+  radio and a healthy one must never render the same, and `status()` carries
+  `sync: null` until something has actually looked.
+- Only **transitions** are audited. A radio adrift for an hour writing a line
+  per poll buries the moment it happened, which is the part worth finding.
+- The watchdog starts with the service (`FORGE_VISION_SYNC_INTERVAL`, default
+  15 s) and **skips any device whose lock is held**, so it never adds latency
+  to a capture.
+- `resync_device()` adopts the radio's values rather than re-applying ours —
+  re-applying would fight whatever made the change and hide the conflict — and
+  then **re-reads**, because adopting cannot fix a TX LO that has stopped
+  tracking RX or an AGC mode that reverted. It withdraws TX authorization,
+  since permission was granted against a configuration that has moved.
+- **Captures record what the radio had, not what it was asked for.** Storing
+  the request meant a clamped or externally-changed setting was written into
+  the experiment as though it were in force — rule 1 inside stored data, the
+  worst place for it. `telemetry.config_verified` says whether the read
+  succeeded; `telemetry.config_note` says what disagreed.
+
+**Two settings are accepted, displayed, and silently ignored.**
+`rx_channel` and `tx_channel` are validated against `capabilities.rx_channels`
+(the adapter still reports 1, so only 0 passes) but `_apply()` hardcodes
+`chan0` for gain and AGC mode, and `receive()` never consults them. Harmless
+today. **The moment the adapter exposes the 2R2T channels, setting
+`rx_channel = 1` will validate, display as RX2, and change nothing** — the
+exact shape of bug the sync work above exists to prevent, but invisible to it
+because the hardware never moves. Wire those through `_apply()` and
+`receive()` in the same change that raises the channel count.
 
 ## Gotchas
 

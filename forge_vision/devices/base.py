@@ -61,6 +61,23 @@ class ConfigurationError(Exception):
     pass
 
 
+# How far a read-back value may sit from the requested one before it counts as
+# drift rather than quantization: (absolute, relative). The absolute figures
+# follow the ones the bench characterization suite settled on for this board
+# (tools/chancal/common.py) — the LO is fractional-N, gain moves in 0.25 dB
+# steps, the sample rate lands on an integer. RF bandwidth is relative because
+# it snaps to whichever analog filter is nearest, which is coarse and scales
+# with the setting; 1% is empirical and deliberately loose, since the actual
+# value is always reported and only the in_sync boolean depends on this.
+SYNC_TOLERANCES = {
+    "center_frequency_hz": (100.0, 0.0),
+    "sample_rate_hz": (1.0, 0.0),
+    "rx_bandwidth_hz": (0.0, 0.01),
+    "rx_gain_db": (0.5, 0.0),
+    "tx_gain_db": (0.5, 0.0),
+}
+
+
 @dataclass
 class CaptureSegment:
     """One timed acquisition unit with complete metadata (FR-ACQ-001/002)."""
@@ -197,6 +214,138 @@ class DeviceAdapter(abc.ABC):
         cfg.tx_gain_db = min(max(cfg.tx_gain_db, caps.min_tx_gain_db),
                              caps.max_tx_gain_db)
         return cfg, notes
+
+    # -- state reconciliation (FR-DEV-002/007) -----------------------------
+    #
+    # `self.config` is what was *asked for*. On real hardware that is not the
+    # same claim as what the radio *has*: the AD9361 driver silently clamps
+    # and quantizes almost every setting, so an unverified write is a guess,
+    # and anything else touching the board — a bench script, another handle,
+    # a reboot — moves it underneath us with no notification. Reporting the
+    # requested value as though it were the actual one is rule 1 (inferred
+    # presented as measured) and rule 3 (a problem hidden).
+
+    def read_hardware_config(self) -> dict | None:
+        """What the device actually holds, or None if it cannot be read.
+
+        The default is correct for devices with no hardware behind them — a
+        simulator's cached config *is* its state, so it cannot drift.
+        """
+        return self.config.to_dict()
+
+    def sync_status(self) -> dict:
+        """Compare the requested configuration against the device's own.
+
+        Tolerances exist because quantization is not drift: the LO is
+        fractional-N, gain moves in 0.25 dB steps, and the RF bandwidth lands
+        on whatever analog filter is nearest. A value inside its tolerance is
+        the setting we asked for, as the hardware is able to express it.
+        Outside it, something other than quantization changed the radio.
+
+        The actual value is reported either way. The tolerance decides a
+        boolean; it never decides what gets shown.
+        """
+        out = {
+            "checked_at": time.time(),
+            "readable": False,
+            "in_sync": None,
+            "drift": [],
+            "hardware": None,
+            "error": None,
+        }
+        try:
+            actual = self.read_hardware_config()
+        except Exception as exc:  # noqa: BLE001 - a driver can fail any way
+            out["error"] = f"could not read device state: {exc}"
+            return out
+        if actual is None:
+            out["error"] = "this device does not expose its hardware state"
+            return out
+
+        out["readable"] = True
+        out["hardware"] = actual
+        requested = self.config.to_dict()
+        for field, (abs_tol, rel_tol) in SYNC_TOLERANCES.items():
+            if field not in actual or field not in requested:
+                continue
+            want, got = requested[field], actual[field]
+            if want is None or got is None:
+                continue
+            tol = max(abs_tol, abs(want) * rel_tol)
+            if abs(got - want) > tol:
+                out["drift"].append({
+                    "field": field,
+                    "requested": want,
+                    "actual": got,
+                    "delta": got - want,
+                    "tolerance": tol,
+                })
+        # Settings outside DeviceConfig that still change what a capture means.
+        # Numeric ones get the same quantization allowance as a frequency;
+        # a mode string is either right or it is not.
+        for field, want in (actual.get("_expected") or {}).items():
+            got = actual.get(field)
+            if got is None:
+                continue
+            if isinstance(want, (int, float)) and isinstance(got, (int, float)):
+                tol = SYNC_TOLERANCES["center_frequency_hz"][0]
+                if abs(got - want) <= tol:
+                    continue
+                delta = got - want
+            elif got == want:
+                continue
+            else:
+                tol, delta = None, None
+            out["drift"].append({
+                "field": field, "requested": want, "actual": got,
+                "delta": delta, "tolerance": tol,
+            })
+        out["in_sync"] = not out["drift"]
+        return out
+
+    def adopt_hardware_state(self) -> dict:
+        """Take the device's own settings as the truth and report what moved.
+
+        Used when the radio has been changed underneath us. Re-applying the
+        cached values instead would fight whatever made the change and hide
+        the conflict; the radio is the authority on its own state.
+
+        Adopting cannot fix everything, so the status returned is **re-read
+        afterwards** rather than the one that justified the adoption. Settings
+        with no `DeviceConfig` field — a TX LO that has stopped tracking RX,
+        an AGC mode that reverted to automatic — survive it, and the caller
+        needs to see that rather than a stale `in_sync` from before the write.
+        """
+        before = self.sync_status()
+        if not before["readable"]:
+            raise ConfigurationError(
+                before["error"] or "device state could not be read")
+        actual = before["hardware"]
+        adopted = []
+        for field in SYNC_TOLERANCES:
+            if field in actual and hasattr(self.config, field):
+                if getattr(self.config, field) != actual[field]:
+                    adopted.append(field)
+                setattr(self.config, field, actual[field])
+
+        after = self.sync_status()
+        after["adopted"] = adopted
+        after["was"] = {d["field"]: d["requested"] for d in before["drift"]}
+        if after["drift"]:
+            after["note"] = (
+                "Adopting the radio's settings did not resolve everything. "
+                + "; ".join(
+                    f"{d['field']} is {d['actual']!r} and should be "
+                    f"{d['requested']!r}" for d in after["drift"])
+                + ". These are not configuration fields, so they need the "
+                  "radio reconfigured or whatever changed it stopped.")
+        if actual.get("gain_control_mode") not in (None, "manual"):
+            after["rx_gain_unstable"] = True
+            after["note"] = (after.get("note", "") + " Receive gain was read "
+                             "while automatic gain control was active, so the "
+                             "adopted figure is a sample of a moving value, "
+                             "not a setting.").strip()
+        return after
 
     def compatible_waveforms(self, catalog: dict) -> list[str]:
         """Names of catalog waveforms this device can actually transmit."""

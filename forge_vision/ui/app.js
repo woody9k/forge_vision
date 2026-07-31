@@ -82,16 +82,75 @@ function renderDashRadios(devices) {
   if (!$("dash-radio")) return;
   const live = devices.filter((d) => d.connected);
   const shown = live.length ? live : devices;
+  // The settings line is what the radio was asked for. Without the sync line
+  // beside it this panel will happily read "915 MHz · RX 40 dB" while the
+  // radio sits at 923 MHz with AGC driving the gain to 73 — which is the
+  // exact failure this is meant to end, on the page most likely to be glanced
+  // at. No resync button here: the Dashboard reports, Hardware acts.
   $("dash-radio").innerHTML = shown.map((d) => `
     <div class="devcard">
       <div class="devmain">${linkLine(d)}<br>
         <span class="mut">${settingsLine(d)}</span>
+        ${syncLine(d, false)}
         ${d.connected ? "" : '<br><span class="mut">not connected</span>'}
       </div>
     </div>`).join("") || '<span class="mut">no radios</span>';
 }
 
 // Hardware: the same radios, with the controls that change them.
+// The settings line above shows what the radio was *asked* for. This says
+// whether it still holds them. "Not checked" is rendered as its own state
+// rather than collapsing into "fine", because a stale reading and a confirmed
+// one are different claims (rule 3).
+function syncLine(d, allowActions = true) {
+  if (!d.connected) return "";
+  const s = d.sync;
+  if (!s) {
+    return `<br><span class="tag" style="background:#1a1a20;border:1px solid #333;
+      color:#888">radio state not yet checked</span>`;
+  }
+  if (s.readable === false) {
+    return `<br><span class="tag" style="background:#2b2410;border:1px solid #5c4c1c;
+      color:#e8c96a">cannot read radio state${
+        s.error ? " — " + esc(s.error) : ""}</span>`;
+  }
+  const age = s.checked_at
+    ? Math.max(0, Math.round(Date.now() / 1000 - s.checked_at)) : null;
+  if (s.in_sync) {
+    return `<br><span class="tag" style="background:#12241d;border:1px solid #1f4a38;
+      color:#86dfc0">radio matches these settings${
+        age !== null ? ` · checked ${age}s ago` : ""}</span>`;
+  }
+  const rows = (s.drift || []).map((x) =>
+    `<div><code>${esc(x.field)}</code>: asked for <b>${esc(String(x.requested))}</b>,
+     radio has <b>${esc(String(x.actual))}</b></div>`).join("");
+  return `<br><span class="tag" style="background:#1c1116;border:1px solid #3a2028;
+      color:#a06070;display:block;padding:6px 8px">
+      <b>The radio is not holding these settings.</b>${
+        age !== null ? ` Checked ${age}s ago.` : ""}
+      ${rows}
+      ${allowActions
+        ? `<button onclick="resyncDevice('${esc(d.device_id)}')">Adopt the
+             radio's values</button>`
+        : `<span class="mut">Resolve this under <b>Hardware</b>.</span>`}
+      <span class="mut">Captures record what the radio actually had, so this
+        does not corrupt data — but the controls above are describing something
+        the radio is not doing.</span>
+    </span>`;
+}
+
+window.resyncDevice = async (id) => {
+  try {
+    const r = await api(`/api/devices/${id}/resync`, { method: "POST" });
+    if (r.note) alert(r.note);
+    if (r.tx_revoked) alert("Transmit permission was withdrawn: the approved "
+      + "configuration no longer describes this radio.");
+  } catch (e) {
+    alert("Resync failed: " + String(e.message || e));
+  }
+  refreshStatus();
+};
+
 function renderDeviceCards(devices) {
   if (!$("device-list")) return;
   $("device-list").innerHTML = devices.map((d) => {
@@ -109,6 +168,7 @@ function renderDeviceCards(devices) {
     <div class="devcard">
       <div class="devmain">${linkLine(d)}<br>
         <span class="mut">${settingsLine(d)}</span>
+        ${syncLine(d)}
         <details>
           <summary>capabilities &amp; notes</summary>
           <span class="mut">
@@ -2101,7 +2161,14 @@ window.openComponent = async (id) => {
 
   if (vna) {
     const b = vna.analysis.best_match;
-    html += row("VNA sweep", `${esc(vna.filename || "imported")} · ${vna.ports}-port · ` +
+    // Say where it came from, rather than defaulting to "imported" — an
+    // instrument sweep has no filename, so this used to label a live sweep
+    // as an import and contradict the provenance line lower down the panel.
+    const src = vna.source || {};
+    const origin = vna.filename ? esc(vna.filename)
+      : src.kind === "instrument" ? `swept on ${esc(src.instrument || "a VNA")}`
+      : "origin not recorded";
+    html += row("VNA sweep", `${origin} · ${vna.ports}-port · ` +
       `${vna.freqs_hz.length} points, ${fmtHz(vna.freqs_hz[0])}–${fmtHz(vna.freqs_hz[vna.freqs_hz.length - 1])}`);
     html += row("Best match", `VSWR ${b.vswr} at ${fmtHz(b.freq_hz)} (S11 ${b.s11_db} dB)`);
     if (s21) {

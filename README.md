@@ -237,6 +237,26 @@ Bench safety notes: start with the `bench_cabled` frequency profile, keep TX
 gain at the -30 dB default, and run the attenuated loopback experiment
 (REF-01, 30–40 dB inline attenuation TX→RX) before any antenna work.
 
+### Knowing what the radio is actually set to
+
+The settings shown for a device are what it was **asked** for. That is not the
+same as what it holds — the AD9361 driver clamps and quantizes silently, AGC
+overrides a gain the moment you write it, and a bench script or a second
+handle moves the board with nothing to announce it.
+
+A watchdog reconciles connected radios against their hardware every 15 s
+(`FORGE_VISION_SYNC_INTERVAL`), and each device card shows the result:
+
+- **"radio matches these settings"** — read back and confirmed
+- **"the radio is not holding these settings"** — with the requested and
+  actual value for each field, and a button to adopt the radio's values
+- **"radio state not yet checked"** — nobody has looked yet, which is
+  deliberately *not* shown as agreement
+
+A full read-back measures ~4 ms over Ethernet, so **captures record what the
+radio actually had** rather than what was requested; `config_verified` in a
+segment's telemetry says whether that succeeded.
+
 ### Vector network analyser
 
 A NanoVNA measures the antennas and cables in the signal path, so their loss

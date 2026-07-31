@@ -294,6 +294,35 @@ class PlutoDevice(DeviceAdapter):
         sdr.rx_hardwaregain_chan0 = cfg.rx_gain_db
         sdr.tx_hardwaregain_chan0 = cfg.tx_gain_db
 
+    def read_hardware_config(self) -> dict | None:
+        """Read what the radio actually holds. Measured at ~3.8 ms over Ethernet.
+
+        Cheap enough to verify a capture against rather than only polling in
+        the background, which matters because `_apply()` writes without
+        reading back and the driver clamps silently.
+
+        `tx_lo` and `gain_control_mode` are carried in `_expected` rather than
+        compared numerically: they are not `DeviceConfig` fields, but they
+        change what a capture means. `_apply()` sets both LOs from one centre
+        frequency, so a TX LO that no longer matches RX means something else
+        moved it — and an AGC mode that has reverted to automatic makes a
+        recorded RX gain fiction.
+        """
+        if self._sdr is None:
+            return None
+        sdr = self._sdr
+        centre = float(sdr.rx_lo)
+        return {
+            "center_frequency_hz": centre,
+            "sample_rate_hz": float(sdr.sample_rate),
+            "rx_bandwidth_hz": float(sdr.rx_rf_bandwidth),
+            "rx_gain_db": float(sdr.rx_hardwaregain_chan0),
+            "tx_gain_db": float(sdr.tx_hardwaregain_chan0),
+            "tx_lo_hz": float(sdr.tx_lo),
+            "gain_control_mode": str(sdr.gain_control_mode_chan0),
+            "_expected": {"tx_lo_hz": centre, "gain_control_mode": "manual"},
+        }
+
     def configure(self, cfg) -> None:
         super().configure(cfg)
         if self._sdr is not None:
@@ -340,16 +369,46 @@ class PlutoDevice(DeviceAdapter):
         clipped = bool(len(iq) and (np.max(np.abs(iq.real)) >= 0.99
                                     or np.max(np.abs(iq.imag)) >= 0.99))
         wf = self._tx_waveform
+        # What the radio *had*, not what it was asked for. Recording the
+        # requested configuration means a clamped or externally-changed
+        # setting is written into the experiment as though it were the one in
+        # force, which is rule 1 inside stored data — the hardest place to
+        # notice it and the worst place to have it. ~4 ms over Ethernet.
+        config = self.config.to_dict()
+        verified, sync_note = False, None
+        try:
+            actual = self.read_hardware_config()
+        except Exception as exc:  # noqa: BLE001
+            sync_note = f"hardware configuration could not be read: {exc}"
+            actual = None
+        if actual:
+            for field in config:
+                if field in actual:
+                    config[field] = actual[field]
+            verified = True
+            drift = self.sync_status()
+            if drift.get("drift"):
+                sync_note = ("the radio did not hold the requested settings: "
+                             + "; ".join(
+                                 f"{d['field']} requested {d['requested']}, "
+                                 f"was {d['actual']}" for d in drift["drift"]))
+            if actual.get("gain_control_mode") not in (None, "manual"):
+                sync_note = ((sync_note + " ") if sync_note else "") + (
+                    "automatic gain control was active, so the recorded "
+                    "receive gain is a sample of a moving value.")
+
         return CaptureSegment(
             iq=iq, timestamp=time.time(),
-            config=self.config.to_dict(),
+            config=config,
             waveform=wf.preview() if wf else None,
             device_id=self.device_id,
-            sample_rate_hz=self.config.sample_rate_hz,
-            center_frequency_hz=self.config.center_frequency_hz,
+            sample_rate_hz=config["sample_rate_hz"],
+            center_frequency_hz=config["center_frequency_hz"],
             loss_events=loss_events,
             clipped=clipped, position=position,
-            telemetry=self.health(), tx_active=self.tx_enabled,
+            telemetry={**self.health(), "config_verified": verified,
+                       **({"config_note": sync_note} if sync_note else {})},
+            tx_active=self.tx_enabled,
         )
 
     def health(self) -> dict:

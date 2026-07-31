@@ -34,8 +34,20 @@ async def lifespan(_app: FastAPI):
     could still be keyed and a survey still sweeping. This does not survive a
     host failure — only a hardware TX watchdog does — but it covers the
     ordinary stop and restart (FR-SAF-003).
+
+    Drift polling starts with the service: a radio that has been moved
+    underneath the platform is only useful to know about if something is
+    looking, and the operator should not have to remember to switch that on.
     """
+    try:
+        runtime.start_sync_watchdog()
+    except Exception:  # noqa: BLE001 - never block startup on the watchdog
+        log.exception("could not start the device sync watchdog")
     yield
+    try:
+        runtime.stop_sync_watchdog()
+    except Exception:  # noqa: BLE001
+        log.exception("error stopping the device sync watchdog")
     try:
         runtime.shutdown("application shutdown")
     except Exception:  # noqa: BLE001 - shutdown must not raise
@@ -785,6 +797,46 @@ async def import_vna(comp_id: str, file: UploadFile):
         text = (await file.read()).decode("utf-8", errors="replace")
         return runtime.components.import_vna(comp_id, text,
                                              filename=file.filename or "")
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+# -- device/hardware state reconciliation ------------------------------------
+@app.get("/api/devices/{device_id}/sync")
+def device_sync(device_id: str):
+    """Compare a device's requested configuration against the hardware's own."""
+    try:
+        return runtime.check_device_sync(device_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.post("/api/devices/{device_id}/resync")
+def device_resync(device_id: str):
+    """Adopt the radio's own settings as the truth after it has drifted."""
+    try:
+        return runtime.resync_device(device_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
+@app.get("/api/sync/watchdog")
+def sync_watchdog():
+    """Whether drift polling is running, and what it last saw."""
+    return runtime.sync_watchdog_status()
+
+
+@app.post("/api/sync/watchdog")
+def set_sync_watchdog(body: S.SyncWatchdogRequest):
+    """Start or stop the drift watchdog, optionally changing its interval."""
+    try:
+        if body.running:
+            return runtime.start_sync_watchdog(body.interval_s)
+        return runtime.stop_sync_watchdog()
     except Exception as exc:  # noqa: BLE001
         raise _fail(exc)
 

@@ -235,6 +235,15 @@ GET  /api/jobs/{job_id}?include_result=true
 
 ## Reading results honestly
 
+**A device's `config` is what it was asked for; `sync` says whether it held.**
+Every device in `/api/status` carries a `sync` block. `in_sync: true` means
+the radio was read and matches. `false` means it does not, and `drift` lists
+each field with its `requested` and `actual` value — quote the actual one.
+**`sync: null` or `in_sync: null` means nobody has checked**, which is not the
+same claim as agreement; say "unverified", not "fine". A capture's
+`telemetry.config_verified` says whether that segment's configuration was read
+back from the hardware rather than assumed.
+
 **A VNA sweep is not evidence it was calibrated.** The instrument reports
 which standards are captured but never the span they cover, and it silently
 interpolates a calibration onto whatever span is swept. Every stored

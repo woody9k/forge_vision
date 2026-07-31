@@ -100,6 +100,12 @@ class Runtime:
         self._tx_waveforms: dict[str, object] = {}   # device -> live waveform
         # set by emergency stop and shutdown; long loops check it
         self.stop_acquisition = threading.Event()
+        # device_id -> last sync_status(); the watchdog fills these in
+        self._sync_records: dict[str, dict] = {}
+        self._sync_thread: threading.Thread | None = None
+        self._sync_stop = threading.Event()
+        self.sync_interval_s = float(
+            os.environ.get("FORGE_VISION_SYNC_INTERVAL", "15"))
         self.position_source = ManualSource()        # FR-POS-001 default
         self._register(SimulatedPluto("sim-pluto-0"))
         self._discover_hardware()
@@ -311,6 +317,135 @@ class Runtime:
         self.safety.notify_tx_stopped(device_id, reason="disconnect")
         self.safety.audit("device_disconnected", device=device_id)
         return self._describe_device(dev)
+
+    # -- state reconciliation (FR-DEV-002/007) -----------------------------
+    #
+    # `dev.config` records what was asked for. The radio is the authority on
+    # what it actually has, and the two come apart more easily than they look:
+    # the AD9361 driver clamps and quantizes silently, AGC overrides a gain
+    # you just wrote, and anything else on the bench — a characterization
+    # script, a second handle, a reboot — moves the board with no notification.
+    # Showing the requested value as though it were the actual one is rule 1;
+    # noticing and not saying is rule 3.
+
+    def check_device_sync(self, device_id: str, blocking: bool = True) -> dict:
+        """Compare a device against its hardware and record the result.
+
+        Only *transitions* reach the audit log. A radio that has been adrift
+        for an hour should not write a line every poll — that buries the
+        moment it happened, which is the part worth finding later.
+        """
+        dev = self.device(device_id)
+        if not getattr(dev, "connected", False):
+            return {"device_id": device_id, "checked_at": time.time(),
+                    "readable": False, "in_sync": None,
+                    "error": "device is not connected", "drift": []}
+
+        lock = self.device_locks[device_id]
+        if not lock.acquire(blocking=blocking):
+            # A capture holds this. Its configuration is in use and will be
+            # checked on the next pass; never make the watchdog a source of
+            # latency in the acquisition path.
+            prev = self._sync_records.get(device_id, {})
+            return {**prev, "device_id": device_id, "skipped": "device busy"}
+        try:
+            status = dev.sync_status()
+        finally:
+            lock.release()
+
+        status["device_id"] = device_id
+        previous = self._sync_records.get(device_id)
+        self._sync_records[device_id] = status
+
+        was = previous.get("in_sync") if previous else None
+        now = status["in_sync"]
+        if previous is not None and was != now:
+            if now is False:
+                self.safety.audit(
+                    "device_drift_detected", device=device_id,
+                    drift=status["drift"])
+            elif now is True:
+                self.safety.audit("device_drift_cleared", device=device_id)
+        elif previous is None and now is False:
+            self.safety.audit("device_drift_detected", device=device_id,
+                              drift=status["drift"], first_check=True)
+        return status
+
+    def resync_device(self, device_id: str) -> dict:
+        """Adopt the radio's own settings as the truth for a drifted device."""
+        dev = self.device(device_id)
+        with self.device_locks[device_id]:
+            status = dev.adopt_hardware_state()
+        status["device_id"] = device_id
+        self._sync_records[device_id] = status
+        self.safety.audit("device_resynced", device=device_id,
+                          adopted=status.get("adopted"),
+                          unresolved=[d["field"] for d in status["drift"]])
+        # Permission was granted against a configuration that has now changed
+        # underneath it, so it no longer describes the radio (rule 5).
+        revoked = self.enforce_tx_authorization(f"resync of {device_id}")
+        if revoked:
+            status["tx_revoked"] = revoked
+        return status
+
+    def sync_record(self, device_id: str) -> dict | None:
+        """The last recorded sync result, without touching the hardware."""
+        return self._sync_records.get(device_id)
+
+    def start_sync_watchdog(self, interval_s: float | None = None) -> dict:
+        """Poll connected devices so drift is found rather than stumbled into.
+
+        A full read-back measures ~4 ms over Ethernet, so this is close to
+        free. It skips any device whose lock is held, which keeps it out of
+        the way of captures entirely.
+        """
+        if interval_s is not None:
+            self.sync_interval_s = float(interval_s)
+        if self._sync_thread is not None and self._sync_thread.is_alive():
+            return {"running": True, "interval_s": self.sync_interval_s}
+
+        self._sync_stop.clear()
+
+        def loop():
+            # Check before the first wait, not after it. Sleeping first leaves
+            # every device reporting "not yet checked" for a full interval
+            # after startup — the moment an operator is most likely to be
+            # looking, having just restarted the service.
+            while True:
+                for device_id in list(self.devices):
+                    if self._sync_stop.is_set():
+                        break
+                    try:
+                        self.check_device_sync(device_id, blocking=False)
+                    except Exception:  # noqa: BLE001 - a watchdog never dies
+                        continue
+                if self._sync_stop.wait(self.sync_interval_s):
+                    break
+
+        self._sync_thread = threading.Thread(
+            target=loop, name="sync-watchdog", daemon=True)
+        self._sync_thread.start()
+        self.safety.audit("sync_watchdog_started",
+                          interval_s=self.sync_interval_s)
+        return {"running": True, "interval_s": self.sync_interval_s}
+
+    def stop_sync_watchdog(self) -> dict:
+        self._sync_stop.set()
+        thread, self._sync_thread = self._sync_thread, None
+        if thread is not None:
+            thread.join(timeout=2.0)
+        return {"running": False, "interval_s": self.sync_interval_s}
+
+    def sync_watchdog_status(self) -> dict:
+        alive = self._sync_thread is not None and self._sync_thread.is_alive()
+        return {
+            "running": alive,
+            "interval_s": self.sync_interval_s,
+            "devices": {k: {"in_sync": v.get("in_sync"),
+                            "checked_at": v.get("checked_at"),
+                            "drift": v.get("drift", [])}
+                        for k, v in self._sync_records.items()},
+        }
 
     def configure(self, device_id: str, cfg: dict) -> dict:
         dev = self.device(device_id)
@@ -1770,6 +1905,13 @@ class Runtime:
         d = dev.describe()
         # the UI must never offer a waveform this radio cannot transmit
         d["compatible_waveforms"] = dev.compatible_waveforms(CATALOG)
+        # The last reconciliation against the hardware. Read from the record
+        # rather than the radio so building a status page cannot block on a
+        # device, but never omitted: a UI showing `config` with no indication
+        # of whether it still matches is the problem this exists to fix. A
+        # `null` here means "not checked yet", which is a different claim from
+        # "in sync" and must not be rendered as one.
+        d["sync"] = self._sync_records.get(dev.device_id)
         # How the radio is attached, in terms an operator reads rather than a
         # libiio URI: the same board over Ethernet and over USB behaves very
         # differently, and the dashboard should not make you infer which from

@@ -432,7 +432,12 @@ aliasing — use Measure delay below for a cross-checked figure."
           </div>
           <div class="subhead">Notes</div>
           <div class="toolbar">
-            <input id="comp-notes" type="text" size="40" placeholder="notes…">
+            <!-- A textarea, not an input: `input.value` strips line breaks, so
+                 loading multi-line notes into one and saving flattened them.
+                 The provenance lines that adopt-loss and measure-delay append
+                 are exactly what got run together. -->
+            <textarea id="comp-notes" rows="4" cols="52"
+                      placeholder="notes…"></textarea>
             <button id="comp-save-notes">Save notes</button>
           </div>
           <div class="subhead">VNA measurement — import a file</div>

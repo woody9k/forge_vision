@@ -242,6 +242,12 @@ class AdoptLossRequest(Strict):
     freq_hz: float | None = Field(None, gt=0)
 
 
+class SyncWatchdogRequest(Strict):
+    """Start or stop periodic reconciliation of devices against their hardware."""
+    running: bool = True
+    interval_s: float | None = Field(None, ge=1.0, le=3600.0)
+
+
 class VnaSweepRequest(Strict):
     """Sweep the VNA, optionally storing the result against a component.
 

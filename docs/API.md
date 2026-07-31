@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785519011.3526506,
+    "time": 1785527930.8088763,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -93,6 +93,7 @@ Platform state: devices, safety, storage, waveforms.
     "fmcw_narrow_20M",
     "... 6 total"
    ],
+   "sync": null,
    "link": {
     "uri": "",
     "kind": "simulated",
@@ -103,10 +104,9 @@ Platform state: devices, safety, storage, waveforms.
    }
   },
   {
-   "device_id": "pluto-ip:pluto.boblab.net",
+   "device_id": "pluto-ip:pluto.local",
    "kind": "pluto",
-   "connected": true,
-   "tx_e
+   "connected": tr
 ```
 
 ### `GET /api/experiments`
@@ -241,7 +241,20 @@ RF component inventory.
   "claimed_band": "",
   "polarization": "",
   "created_at": 1785428616.7621756,
-  "has_vna": false
+  "has_vna": true,
+  "best_match": {
+   "freq_hz": 1229000000.0,
+   "vswr": 1.059,
+   "s11_db": -30.88
+  },
+  "recommended_bands": [
+   {
+    "start_hz": 792000000.0,
+    "stop_hz": 3000000000.0,
+    "rating": "recommended",
+    "min_vswr": 1.06
+   }
+  ]
  },
  {
   "component_id": "2205b245a2",
@@ -277,27 +290,42 @@ Declared cable/adapter chain, recorded with every experiment.
 ```json
 {
  "declared": {
-  "tx_ids": [],
+  "tx_ids": [
+   "2205b245a2"
+  ],
   "rx_ids": [],
-  "antenna_tx": "",
-  "antenna_rx": ""
+  "antenna_tx": "1baed4307e",
+  "antenna_rx": "abecc2b819"
  },
  "resolved": {
-  "tx_path": [],
+  "tx_path": [
+   {
+    "component_id": "2205b245a2",
+    "kind": "cable",
+    "name": "long skinny cable",
+    "connector": "",
+    "nominal_loss_db": 5.334,
+    "nominal_delay_ns": 14.716
+   }
+  ],
   "rx_path": [],
-  "antenna_tx": "",
-  "antenna_rx": "",
-  "total_loss_db": 0.0,
-  "total_delay_ns": 0.0,
+  "antenna_tx": "1baed4307e",
+  "antenna_rx": "abecc2b819",
+  "total_loss_db": 5.33,
+  "total_delay_ns": 14.716,
   "components_without_characterisation": [],
   "band": {
    "usable_bands": [],
-   "measured_components": [],
+   "measured_components": [
+    "blue triangle long periodic",
+    "telescoping whip (RX1)",
+    "long skinny cable"
+   ],
    "unverified_components": [],
-   "note": "No component in this chain has a VNA measurement, so its usable band is unknown."
+   "note": "The measured components have no frequency range in common; this chain has no recommended band."
   },
-  "config_id": "",
-  "config_name": ""
+  "config_id": "2fc5e2de24",
+  "config_name": "test1"
  }
 }
 ```
@@ -748,6 +776,15 @@ Where a radio lives, in whatever form a person would type it.
 | `name` | string | no | `"band survey"` |  |
 | `operator` | string | no | `""` |  |
 
+### `POST /api/sync/watchdog`
+
+Start or stop periodic reconciliation of devices against their hardware.
+
+| field | type | required | default | notes |
+|---|---|---|---|---|
+| `running` | boolean | no | `true` |  |
+| `interval_s` | number (>= 1.0, <= 3600.0) | no | — |  |
+
 ### `POST /api/vna/calibration_check`
 
 Verify a calibration covers a span by measuring a known thru.
@@ -845,7 +882,9 @@ labelled as insertion loss.
 | POST | `/api/devices/{device_id}/connect` | Connect |
 | POST | `/api/devices/{device_id}/disconnect` | Disconnect |
 | POST | `/api/devices/{device_id}/forget` | Forget Device |
+| POST | `/api/devices/{device_id}/resync` | Device Resync |
 | POST | `/api/devices/{device_id}/switch_transport` | Switch Transport |
+| GET | `/api/devices/{device_id}/sync` | Device Sync |
 | POST | `/api/devices/{device_id}/tx` | Set Tx ⚠️ transmits |
 | GET | `/api/experiments` | Experiments |
 | GET | `/api/experiments/{exp_id}` | Experiment |
@@ -908,6 +947,8 @@ labelled as insertion loss.
 | GET | `/api/status` | Status |
 | POST | `/api/stepped/run` | Stepped Run ⚠️ transmits |
 | POST | `/api/survey` | Survey |
+| GET | `/api/sync/watchdog` | Sync Watchdog |
+| POST | `/api/sync/watchdog` | Set Sync Watchdog |
 | POST | `/api/vna/calibration_check` | Vna Calibration Check |
 | GET | `/api/vna/discover` | Vna Discover |
 | POST | `/api/vna/measure_delay` | Vna Measure Delay |
