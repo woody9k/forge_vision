@@ -97,7 +97,14 @@ positioning.py  manual / survey-wheel / replay position sources
   rule. Only one handle may claim the **USB** interface (`connect()` is
   idempotent); the network backends are not exclusive, so diagnostics can run
   alongside a deployment.
-- **`usb:`, `ip:192.168.2.1` and the Ethernet address are all the same board.**
+- The Ethernet port has a **static address, 192.168.99.222** (`ipaddr_eth` in
+  the `[USB_ETHERNET]` section of `config.txt` on the board's FAT16 partition).
+  To change it: mount `/dev/sda1`, edit `config.txt` — it is **CRLF**, so a
+  `sed` pattern anchored with `$` silently matches nothing — set
+  `[ACTIONS] reset = 1`, then send a real **SCSI eject** (`eject /dev/sda`).
+  A plain `umount` is not enough; the firmware only re-reads the file on a
+  medium-removal event, and clears the reset flag itself after rebooting.
+- **`usb:`, `ip:192.168.99.222` and `ip:192.168.2.1` are all the same board.**
   Verified by writing the LO on one and reading it on another. Registering the
   radio twice gives two device entries with independent cached configs that
   silently diverge — observed one entry reporting 923 MHz while the other and
