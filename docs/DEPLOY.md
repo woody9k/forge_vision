@@ -201,7 +201,7 @@ deploy/forge-vision backup            # state first; it is the irreplaceable par
 deploy/forge-vision stop
 git pull
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m pytest tests/     # ~190 tests, ~75 s
+.venv/bin/python -m pytest tests/     # ~265 tests, ~3.5 min
 deploy/forge-vision preflight
 deploy/forge-vision start
 deploy/forge-vision health

@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785502314.2911015,
+    "time": 1785509612.1697693,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -116,6 +116,23 @@ Experiment index. Filter with ?query=, ?tag=, ?kind=.
 ```json
 [
  {
+  "experiment_id": "20260731-102906-1e7c3f",
+  "name": "baseline: bare RX port (no antenna)",
+  "objective": "receive-only occupancy survey 2400.0-2500.0 MHz",
+  "owner": "",
+  "tags": [],
+  "kind": "survey",
+  "started_at": 1785508146.1640632,
+  "ended_at": 1785508152.071578,
+  "status": "finalized",
+  "num_segments": 0,
+  "derived": [
+   "band_survey"
+  ],
+  "device": "pluto-ip:pluto.boblab.net",
+  "parent": null
+ },
+ {
   "experiment_id": "20260730-182539-06cf7e",
   "name": "band survey",
   "objective": "receive-only occupancy survey 902.0-928.0 MHz",
@@ -149,24 +166,7 @@ Experiment index. Filter with ?query=, ?tag=, ?kind=.
   "device": "pluto-usb:",
   "parent": null
  },
- {
-  "experiment_id": "20260730-133229-ddf51c",
-  "name": "WiFi band check via LPDA",
-  "objective": "receive-only occupancy survey 2400.0-2450.0 MHz",
-  "owner": "",
-  "tags": [],
-  "kind": "survey",
-  "started_at": 1785432749.6517832,
-  "ended_at": 1785432752.357948,
-  "status": "finalized",
-  "num_segments": 0,
-  "derived": [
-   "band_survey"
-  ],
-  "device": "pluto-usb:",
-  "parent": null
- },
- "... 24 total"
+ "... 25 total"
 ]
 ```
 

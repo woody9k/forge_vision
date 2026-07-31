@@ -35,7 +35,8 @@ result until it has been measured against hardware.
 |---|---|
 | Using the API from code or another AI | [docs/AGENTS.md](docs/AGENTS.md) — concepts, safety boundaries, common tasks |
 | Endpoint reference with real examples | [docs/API.md](docs/API.md) — generated from a live instance |
-| Working on this codebase | [CLAUDE.md](CLAUDE.md) — invariants, layout, hardware gotchas |
+| Working on this codebase | [CLAUDE.md](CLAUDE.md) — invariants, layout, hardware gotchas, what to do next |
+| Running it as a service | [docs/DEPLOY.md](docs/DEPLOY.md) — install, exposure, upgrade, backup |
 | Interactive schema | `http://127.0.0.1:8347/docs` while the server runs |
 
 ## Quick start
@@ -95,7 +96,7 @@ Open http://127.0.0.1:8347/ and:
 .venv/bin/python -m pytest tests/
 ```
 
-192 tests keyed to the spec's reference experiments and acceptance criteria:
+267 tests keyed to the spec's reference experiments and acceptance criteria:
 
 | Spec item | Test |
 |---|---|

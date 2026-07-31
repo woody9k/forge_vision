@@ -67,14 +67,25 @@ tests drive; `server/app.py` is a thin routing shell over it. Put logic in the
 runtime, not the routes.
 
 ```
-devices/     adapter contract, simulated radio, real Pluto, replay source
-dsp/         versioned pipeline, FMCW stages, peaks, stepped-frequency synthesis
-imaging/     B-scan assembly, diffraction-stack migration
-sites.py     site model, cross-scan fusion into world coordinates
-sage/        grounded facts, analysis, query parser, optional LLM narration
-jobs.py      cancellable background jobs
+devices/        adapter contract, simulated radio, real Pluto, replay source
+  discovery.py  probe every transport, measure it, group one board, pick one
+  book.py       radio addresses the operator saved, edited from the UI
+dsp/            versioned pipeline, FMCW stages, peaks, stepped-frequency synthesis
+imaging/        B-scan assembly, diffraction-stack migration
+rfcomponents/   component inventory, touchstone/VNA import
+  chains.py     the working signal path plus named, reusable configurations
+safety.py       interlock, TX authorization fingerprints, audit log
+sites.py        site model, cross-scan fusion into world coordinates
+sage/           grounded facts, analysis, query parser, optional LLM narration
+jobs.py         cancellable background jobs
 positioning.py  manual / survey-wheel / replay position sources
+ui/             single-page UI: Dashboard is read-only, Hardware holds plumbing
 ```
+
+The UI splits along one line worth preserving: **Hardware** owns anything
+physical (radios, transports, signal path, components), **Dashboard** is
+read-only status, and operating controls that change while you work — centre
+frequency, gain — stay on the working pages beside the plots they affect.
 
 ## Hardware notes that cost time to learn
 
@@ -125,6 +136,59 @@ positioning.py  manual / survey-wheel / replay position sources
 - Reflashing re-enumerates the board, which invalidates any open USB handle.
   The adapter keeps reporting `connected: true`; the tell is that `health`
   loses its `temperature_c` field. Disconnect and reconnect to recover.
+
+## Where things stand
+
+**Nothing has ever transmitted.** The receive path is validated on hardware;
+the transmit path exists only in simulation. Treat every transmit-derived
+figure — including the stepped-frequency resolution results — as a simulation
+result. README has the full maturity table; do not let code existing be read
+as a physical claim.
+
+The bench right now: a Pluto+ on Ethernet at `pluto.boblab.net`
+(192.168.99.222), reachable and healthy, TX off, disarmed. The deployment is
+bound to `0.0.0.0` deliberately (single-operator lab network, no auth — see
+docs/DEPLOY.md) and the UI is at http://192.168.99.124:8347.
+
+**In flight:** a passive antenna-directivity measurement. A bare-RX-port
+baseline is recorded (experiment `20260731-102906-1e7c3f`: flat −104.7 dBFS
+across 2400–2500 MHz, occupancy 0.00 everywhere, which is the reference the
+antenna gets compared against). The next steps need the operator to attach the
+blue-triangle log-periodic through the 10 ft cable to RX, sweep 2.4 GHz
+pointed at a WiFi AP, then rotate 180° and sweep again — the difference is
+front-to-back ratio. Receive-only throughout; nothing keys the transmitter.
+Watch for clipping at 40 dB RX gain and drop to 30 dB if it appears, because a
+clipped sweep is not a measurement.
+
+**The engineering queue**, in the order I would take it. An external review
+produced a longer list; these are the parts that survived verification:
+
+1. **Raw retention for stepped sweeps.** `stepped_run` stores only the
+   stitched `stepped_profile` derived product — the per-step captures are
+   built in a local list and discarded. A stepped run therefore cannot be
+   reprocessed or independently checked, which is rule 4 unmet in spirit. Save
+   each step as a segment, create the experiment before the sweep, and
+   finalize as partial on cancellation.
+2. **Persistent calibration.** `runtime.calibration` is an in-memory dict and
+   is lost on restart. It also needs to record what it was taken with
+   (waveform, gains, chain, frequency span) and refuse to apply against an
+   incompatible configuration, the same way chain configurations already do.
+3. **Bistatic geometry.** `imaging/migration.py` uses
+   `r = sqrt(z² + (x−x₀)²)` — a one-way slant range from a single point. With
+   separate TX and RX antennas the path is TX→target plus target→RX. Only
+   bites once two antennas sit at a known separation, which is why it is third.
+4. **FMCW timing validation.** The simulator assumes the receive buffer starts
+   at a known point in the chirp. Real hardware gives no such guarantee, so
+   absolute ranging is unproven. Needs an attenuated loopback and repeated
+   captures across TX restarts and retunes.
+
+Deferred, not forgotten: a coherent phase reference needs a second receive
+channel. The board runs as **AD9364, 1R1T** — `cf-ad9361-lpc` exposes two
+channels which are I/Q of one receiver. Pluto+ hardware often carries an
+AD9361 (2R2T) and the driver binds whatever `compatible` says; the old trap
+where `ad9361` was downgraded to `ad9363a` applied to non-Rev.C model strings,
+and this board now reports Rev.C. Worth investigating before planning any
+work that assumes RX2 exists.
 
 ## Gotchas
 
