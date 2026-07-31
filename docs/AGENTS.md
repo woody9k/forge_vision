@@ -76,6 +76,45 @@ that exists to prevent destroying a receiver.
 
 **`POST /api/safety/stop` is always allowed.** Stopping is safe.
 
+### Transmit permission belongs to a configuration, not to a device
+
+Even if an operator has armed the platform and started a transmission, that
+permission covers *the exact setup it was granted for*: centre frequency,
+occupied span, waveform, both gains, sample rate, RF bandwidth, active
+frequency profile, and declared path attenuation.
+
+Change any of those and the permission is withdrawn — the radio stops
+transmitting, and `tx_authorization_revoked` is written to the safety audit.
+That includes calls you might think of as harmless:
+
+```
+POST /api/devices/{id}/configure   {"rx_gain_db": 50}   → TX stops
+POST /api/safety/profile           {"profile": "..."}   → TX stops
+POST /api/safety/path_attenuation  {"attenuation_db":…} → TX stops
+```
+
+So do not reconfigure a device to "tidy up" while an operator is mid-run: you
+will silently end their transmission. Read `GET /api/status` first, and leave
+the device alone if `safety.tx_active` is true.
+
+This exists because `configure()` used to bypass the interlock entirely — TX
+gain could be raised a thousandfold, or the radio walked outside its allowed
+band, while transmitting.
+
+### Frequency limits apply to the whole occupied band
+
+A waveform is refused if any part of its sweep falls outside the active
+profile, not merely its centre frequency. A 56 MHz sweep centred inside a
+26 MHz allocation is rejected, and the error says which span it occupies.
+
+### An emergency stop latches
+
+`POST /api/safety/stop` disables transmit, cancels running jobs, annotates
+unfinished scans as interrupted, and then **refuses further acquisition** until
+someone lifts it. `GET /api/status` reports `acquisition_stopped`. Lifting it
+is an operator decision (`POST /api/safety/resume`, or re-arming) — an
+automated client should surface the state, not clear it.
+
 Everything else — reading experiments, running analyses on stored data, asking
 SAGE, building site scenes, generating reports — operates on stored data and
 cannot touch hardware.
@@ -90,11 +129,40 @@ for a survey.
 
 **Understand what exists**
 ```
-GET /api/status                     → devices, capabilities, safety, storage
+GET /api/status                     → devices, capabilities, safety, storage,
+                                      acquisition_stopped
 GET /api/experiments                → index; add ?kind=scan|range|survey|stepped
 GET /api/experiments/{id}           → full manifest with annotations
 GET /api/experiments/{id}/derived/{name}
+GET /api/devices/transports         → every way into every radio, measured
+GET /api/radios                     → saved radio addresses
+GET /api/rf_chain                   → the antenna/cable path readings pass through
+GET /api/chains                     → saved chain configurations, one active
+GET /api/chains/{id}                → a configuration and its measurements
 ```
+
+**How a radio is attached** — each device in `/api/status` carries a `link`:
+
+```json
+{"kind": "network|usb|usb-gadget|simulated",
+ "address": "pluto.boblab.net (192.168.99.222)",
+ "throughput_mb_s": 22.6,
+ "chosen_because": "fastest measured transport at 22.6 MB/s",
+ "alternatives": [{"uri": "usb:", "kind": "usb", "throughput_mb_s": 17.5}]}
+```
+
+The same radio is usually reachable several ways and they are **not**
+equivalent — Ethernet measured roughly twice the USB throughput on this bench.
+`POST /api/devices/{id}/switch_transport` moves to another link;
+`POST /api/devices/{id}/forget` drops the entry (the next scan finds it again).
+Both change what the operator is working with, so ask first.
+
+**The signal path is part of every measurement.** `GET /api/rf_chain` resolves
+the declared antenna and cables, totals their loss and delay, and reports what
+is *not* characterised rather than treating unmeasured parts as lossless. If it
+says `config_modified`, the patching no longer matches the saved configuration
+it is named after — do not describe a capture as coming from that
+configuration.
 
 **Ask about a finding** (this is the highest-value path)
 ```
@@ -162,6 +230,24 @@ limits of its own measurement. Relay them.
 - **Nothing has ever transmitted on this bench.** The receive path is verified
   against real hardware; the transmit path is exercised only in simulation.
   Treat any transmit-derived result as unvalidated until that changes.
+
+### Maturity — do not confuse "implemented" with "validated"
+
+Code existing is not evidence that a physical claim holds. As of this writing:
+
+| Area | Status |
+|---|---|
+| Receive path, capture, band survey | **bench validated** on a real Pluto+ |
+| Transport selection, chain provenance, safety interlocks | **bench validated** |
+| Range profiles, stepped-frequency synthesis | **simulator validated** — the
+  headline resolution figures come from simulation |
+| Migration, site fusion, Scene Builder, SAGE | **implemented**, exercised in
+  simulation only |
+| Bistatic geometry, coherent phase reference | **not implemented** — the
+  imaging model currently assumes co-located TX and RX |
+
+When reporting a result, say which of these it rests on. A migrated image from
+simulated data is a demonstration of the code, not a measurement of the ground.
 
 ## If you are unsure
 
