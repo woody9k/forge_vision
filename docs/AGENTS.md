@@ -330,6 +330,8 @@ Code existing is not evidence that a physical claim holds. As of this writing:
 | Transport selection, chain provenance, safety interlocks | **bench validated** |
 | VNA component measurement | **bench validated** on a NanoVNA-F V2 — but read
   `vna.calibration` before quoting any of it |
+| Radio state reconciliation | **bench validated** — drift from an out-of-band
+  change is detected on a real Pluto+; check `sync` before quoting `config` |
 | Range profiles, stepped-frequency synthesis | **simulator validated** — the
   headline resolution figures come from simulation |
 | Migration, site fusion, Scene Builder, SAGE | **implemented**, exercised in

@@ -12,7 +12,7 @@ to that document — keep citing them, it is how coverage is tracked.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
-.venv/bin/python -m pytest tests/          # 341 tests, ~3 min
+.venv/bin/python -m pytest tests/          # 342 tests, ~3 min
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
@@ -244,9 +244,24 @@ hardware: driver, sweep, analysis, and storage were exercised against a
 NanoVNA-F V2 measuring real cables on 2026-07-31.
 
 The bench right now: a Pluto+ on Ethernet at `pluto.boblab.net`
-(192.168.99.222), reachable and healthy, TX off, disarmed. The deployment is
-bound to `0.0.0.0` deliberately (single-operator lab network, no auth — see
-docs/DEPLOY.md) and the UI is at http://192.168.99.124:8347.
+(192.168.99.222), reachable and healthy, TX off, disarmed, at 915 MHz /
+30.72 MSPS / RX 40 dB / TX −30 dB. The deployment is bound to `0.0.0.0`
+deliberately (single-operator lab network, no auth — see docs/DEPLOY.md) and
+the UI is at http://192.168.99.124:8347.
+
+**The reported configuration is now reconciled against the radio.** A
+watchdog polls every connected device every 15 s and the UI says whether the
+settings shown are the ones the radio holds. Read that before trusting a
+number off the Dashboard, and see "Keeping the reported configuration honest"
+below for what it can and cannot catch.
+
+**The UI is verified in a browser, not only by tests.** Doing that on
+2026-08-01 found three defects that the test suite, a JS syntax check and an
+element-reference audit had all passed — including a notes field that
+silently flattened multi-line text and destroyed measurement provenance on
+save. Open the page. The connected browsers are on Windows, so use the LAN
+address (`192.168.99.124`), not `127.0.0.1`, which from there is a different
+machine entirely.
 
 **In flight:** a passive antenna-directivity measurement. A bare-RX-port
 baseline is recorded (experiment `20260731-102906-1e7c3f`: flat −104.7 dBFS
@@ -258,15 +273,25 @@ front-to-back ratio. Receive-only throughout; nothing keys the transmitter.
 Watch for clipping at 40 dB RX gain and drop to 30 dB if it appears, because a
 clipped sweep is not a measurement.
 
-A cable measured on the NanoVNA on 2026-07-31 showed **5.7 dB insertion loss
-at 2.45 GHz** (3.0 dB at 700 MHz, 6.9 dB at 3 GHz) — a loss curve consistent
-with thin coax. Whether that is the 10 ft feedline is unconfirmed; check
-before relying on it. If it is: front-to-back ratio is unaffected, because a
-fixed loss cancels in a difference of two sweeps. But any *absolute*
-comparison against the −104.7 dBFS bare-port baseline needs 5.7 dB added back
-— that baseline was recorded with no cable — and the same 5.7 dB raises the
+The feedline (`long skinny cable` in the inventory) was measured on the
+NanoVNA on 2026-07-31: **5.7 dB insertion loss at 2.45 GHz** (3.0 dB at
+700 MHz, 6.9 dB at 3 GHz) and **14.7 ns electrical delay**. The delay is what
+identifies it — 14.7 ns at a velocity factor around 0.70 is 3.09 m, or
+**10.1 ft**, and the 8.9–10.5 ft spread across plausible velocity factors
+brackets 10 ft. So this is the 10 ft feedline, and the loss figure applies to
+the directivity work.
+
+That cuts two ways. Front-to-back ratio is **unaffected**: it is a difference
+of two sweeps, so a fixed loss cancels exactly. Any *absolute* comparison
+against the −104.7 dBFS bare-port baseline needs **5.7 dB added back**, since
+that baseline was recorded with no cable — and the same 5.7 dB raises the
 effective noise figure, so confirm the AP still clears the floor before
 committing to a rotation run.
+
+The 14.7 ns includes 0.97 ns the operator declared for the calibration
+reference plane (the 8 in jumper the thru cal was performed through), which is
+an assumption rather than a measurement. The measured figure alone is
+13.75 ns, cross-checked at 101 and 301 points.
 
 **The engineering queue**, in the order I would take it. An external review
 produced a longer list; these are the parts that survived verification:
@@ -277,10 +302,15 @@ produced a longer list; these are the parts that survived verification:
    reprocessed or independently checked, which is rule 4 unmet in spirit. Save
    each step as a segment, create the experiment before the sweep, and
    finalize as partial on cancellation.
-2. **Persistent calibration.** `runtime.calibration` is an in-memory dict and
-   is lost on restart. It also needs to record what it was taken with
-   (waveform, gains, chain, frequency span) and refuse to apply against an
-   incompatible configuration, the same way chain configurations already do.
+2. **Persistent safety and calibration state.** Two things live only in memory
+   and are silently lost on restart. The **active frequency profile** is the
+   urgent one — it reverts to `bench_cabled` (70 MHz – 6 GHz) every start, so
+   a profile narrowed for antenna work quietly widens again; that is a safety
+   gate reverting without telling anyone. Then `runtime.calibration`, an
+   in-memory dict that is simply lost — and which also needs to record what it
+   was taken with (waveform, gains, chain, frequency span) and refuse to apply
+   against an incompatible configuration, the same way chain configurations
+   already do.
    The VNA path now solves the same problem and is the model to copy: a stored
    measurement carries a `calibration` record that stays `known: false` until
    evidence says otherwise, and `analyze_thru_residual()` produces that
@@ -392,6 +422,18 @@ because the hardware never moves. Wire those through `_apply()` and
 `receive()` in the same change that raises the channel count.
 
 ## Gotchas
+
+- **The active frequency profile does not survive a restart.** `SafetyLimits()`
+  is constructed with its defaults in `Runtime.__init__` and nothing persists
+  `active_profile`, so every start silently returns to **`bench_cabled`
+  (70 MHz – 6 GHz)** — the closed-circuit profile. Observed on 2026-07-31:
+  the profile was deliberately narrowed to `ism_conservative` because antennas
+  had gone on the bench, and a later service restart widened it back with no
+  notice. Check `safety.limits.active_profile` in `/api/status` after any
+  restart, and re-set it before radiating. This is the same in-memory-state
+  defect as engineering-queue item 2 (`runtime.calibration`) and wants the
+  same fix; the profile is arguably the more urgent of the two, because it is
+  a safety gate rather than a correction.
 
 - `pkill -f 'uvicorn forge_vision'` matches the killing shell's own command
   line. Put the kill in its own step and use a bracket pattern:
