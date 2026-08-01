@@ -206,7 +206,31 @@ async function refreshStatus() {
   refreshChain();
   refreshRxProtection();
   refreshPositionUi();
+  syncServerMirroredFields();
 }
+
+// Fields whose value belongs to the server rather than to this page. They
+// were write-only: read on submit, never populated, so they showed their HTML
+// default no matter what the platform actually held. `atten-db` is the one
+// that matters — it feeds the receive-protection estimate, and a form stuck
+// at 0 invites re-submitting 0 over a real declared value.
+function syncServerMirroredFields() {
+  const set = (id, value) => {
+    const el = $(id);
+    // Never fight a keystroke: if the operator is in the field, it is theirs.
+    if (!el || document.activeElement === el || value === undefined
+        || value === null) return;
+    el.value = value;
+  };
+  if (STATUS && STATUS.safety) set("atten-db", STATUS.safety.path_attenuation_db);
+  if (!configFormLoaded && $("live-device") && $("live-device").value) {
+    configFormLoaded = true;
+    syncDeviceConfigInputs($("live-device").value);
+  } else {
+    renderConfigDrift();
+  }
+}
+let configFormLoaded = false;
 
 // The frequency profile persists across restarts. When it could *not* be
 // restored the platform falls back to the built-in default, and that has to
@@ -251,13 +275,29 @@ function renderDashboard() {
     </div>`).join("") || '<span class="mut">none yet</span>';
 }
 
+// Which radio a fresh page should be pointed at. `sim-pluto-0` is registered
+// first, so with no selection to preserve the browser picked the *simulator*
+// on every page load — including with a real radio connected. An operator
+// would then read the config panel, adjust a gain and press Apply, having
+// configured the simulator while the radio they were working with sat
+// untouched, and the Dashboard (which shows the real one) disagreed with the
+// Live RF form for reasons nothing on screen explained.
+function preferredDevice(devices) {
+  const real = devices.filter((d) => d.kind !== "simulated_pluto_plus");
+  return (real.find((d) => d.connected) || real[0]
+          || devices.find((d) => d.connected) || devices[0] || {}).device_id;
+}
+
 function fillSelectors() {
   const devs = STATUS.devices.map((d) => d.device_id);
+  const preferred = preferredDevice(STATUS.devices);
   for (const id of ["live-device", "range-device", "scan-device"]) {
     const sel = $(id);
     const cur = sel.value;
     sel.innerHTML = devs.map((d) => `<option>${esc(d)}</option>`).join("");
-    if (devs.includes(cur)) sel.value = cur;
+    // Preserve a deliberate choice; otherwise prefer a real radio over the
+    // simulator rather than whichever happens to be registered first.
+    sel.value = devs.includes(cur) ? cur : (preferred || devs[0]);
   }
   // waveform lists are per-device: a stock AD9363 Pluto (20 MHz) cannot
   // transmit the 56 MHz sweeps, so never offer them for that radio
@@ -831,18 +871,58 @@ let waterfallRows = [];
 // Show what the radio is actually set to, not what the boxes were last left
 // at. These are editable, so they are only synced on connect and on selecting
 // a device — never per frame, which would fight the operator mid-keystroke.
-async function syncDeviceConfigInputs(id) {
-  let st;
-  try { st = await api("/api/status"); } catch (e) { return; }
-  const d = (st.devices || []).find((x) => x.device_id === id);
-  if (!d || !d.config) return;
-  const c = d.config;
-  $("cfg-freq").value = (c.center_frequency_hz / 1e6).toFixed(3).replace(/\.?0+$/, "");
-  $("cfg-rate").value = (c.sample_rate_hz / 1e6).toFixed(2);
-  $("cfg-bw").value = (c.rx_bandwidth_hz / 1e6).toFixed(0);
-  $("cfg-rxgain").value = c.rx_gain_db;
-  $("cfg-txgain").value = c.tx_gain_db;
+// A field that mirrors server state has to be *loaded* from it, not only
+// written back to it. These were populated from hardcoded values in the HTML
+// and refreshed only on connect, device-change and apply — never on page
+// load. So a refresh showed 61.44 MSPS and 56 MHz against a radio running
+// 30.72/30.72, and pressing "Apply config" without touching anything would
+// have pushed those defaults onto the radio. One place defines the mapping
+// now, so a new field cannot be added to the form and forgotten here.
+const CFG_FIELDS = [
+  ["cfg-freq", (c) => (c.center_frequency_hz / 1e6).toFixed(3).replace(/\.?0+$/, "")],
+  ["cfg-rate", (c) => (c.sample_rate_hz / 1e6).toFixed(2)],
+  // Not toFixed(0): a radio at 30.72 MHz rendered as "31", and pressing
+  // Apply without touching anything then pushed 31 MHz onto it. A field that
+  // cannot represent the value it was loaded with corrupts it on round trip.
+  ["cfg-bw", (c) => (c.rx_bandwidth_hz / 1e6).toFixed(2).replace(/\.?0+$/, "")],
+  ["cfg-rxgain", (c) => String(c.rx_gain_db)],
+  ["cfg-txgain", (c) => String(c.tx_gain_db)],
+];
+
+function deviceFromStatus(id) {
+  return ((STATUS && STATUS.devices) || []).find((x) => x.device_id === id);
 }
+
+async function syncDeviceConfigInputs(id) {
+  let d = deviceFromStatus(id);
+  if (!d) {
+    try { d = ((await api("/api/status")).devices || []).find((x) => x.device_id === id); }
+    catch (e) { return; }
+  }
+  if (!d || !d.config) return;
+  for (const [field, read] of CFG_FIELDS) $(field).value = read(d.config);
+  renderConfigDrift(id);
+}
+
+// Loading on boot fixes the stale form, but it cannot stop the radio moving
+// afterwards — another page, a bench script, or the operator part-way through
+// an edit. Rather than overwrite what someone is typing on a 5 s poll, say
+// when the form and the radio disagree and offer to reload. Silent
+// disagreement between two views of the same radio is the actual complaint.
+function renderConfigDrift(id) {
+  const el = $("cfg-drift");
+  if (!el) return;
+  const d = deviceFromStatus(id || ($("live-device") || {}).value);
+  if (!d || !d.config) { el.innerHTML = ""; return; }
+  const differs = CFG_FIELDS.filter(([f, read]) => $(f).value !== read(d.config));
+  if (!differs.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<span class="tag" style="background:#2b2410;border:1px solid #5c4c1c;
+    color:#e8c96a">form differs from the radio: ${
+      differs.map(([f]) => esc(f.replace("cfg-", ""))).join(", ")}</span>
+    <button onclick="reloadConfigForm()">Load from radio</button>`;
+}
+
+window.reloadConfigForm = () => syncDeviceConfigInputs($("live-device").value);
 
 $("live-connect").onclick = async () => {
   const id = $("live-device").value;
