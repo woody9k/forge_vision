@@ -24,6 +24,7 @@ itself rather than through it.
 | Device discovery, transport selection, chain provenance | bench validated |
 | Safety interlocks, TX authorization, emergency stop | bench validated (never keyed) |
 | VNA component measurement (antennas, cables) | bench validated on a NanoVNA-F V2 |
+| Radio state reconciliation (drift watchdog) | bench validated — detects out-of-band changes on a real Pluto+ |
 | FMCW range profiles, stepped-frequency synthesis | simulator validated |
 | B-scan, migration, site fusion, Scene Builder, SAGE | implemented, simulator only |
 | Bistatic geometry, coherent phase reference | not implemented |
