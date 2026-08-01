@@ -74,7 +74,16 @@ what an object is, and neither should you.
 attenuation in the cable path"*. That is a claim about the physical bench that
 only a person standing at it can make truthfully, and the receive-protection
 interlock depends on it. Asserting it from software hollows out a safeguard
-that exists to prevent destroying a receiver.
+that exists to prevent destroying a receiver. It is deliberately **not**
+persisted across restarts for the same reason — the cabling may have changed
+while the service was down, so the claim has to be made again.
+
+The frequency profile *is* persisted, because it is a policy rather than a
+physical claim. `safety.profile_source` tells you where the active one came
+from: `restored` from disk, `set` this session, or the built-in `default`
+because the saved one could not be read. The last case carries a `note` and
+means nobody has chosen the profile currently in force — say so rather than
+reporting the name alone.
 
 **`POST /api/safety/stop` is always allowed.** Stopping is safe.
 

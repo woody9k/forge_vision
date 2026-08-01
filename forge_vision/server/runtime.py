@@ -7,6 +7,7 @@ routing shell over this class.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -92,6 +93,8 @@ class Runtime:
         self.llm.load()
         self.safety = SafetyController(
             SafetyLimits(), os.path.join(self.data_dir, "logs", "safety_audit.jsonl"))
+        self._safety_state_path = os.path.join(self.data_dir, "safety_state.json")
+        self.profile_restore = self._restore_frequency_profile()
         self.devices: dict[str, object] = {}
         self.device_locks: dict[str, threading.Lock] = {}
         self.calibration: dict[str, dict] = {}       # device_id -> assets
@@ -583,16 +586,104 @@ class Runtime:
             rf_bandwidth_hz=float(dev.config.rx_bandwidth_hz),
             device_sample_rate_hz=float(dev.config.sample_rate_hz))
 
+    # -- persisted safety policy (FR-SAF-007) ------------------------------
+    #
+    # The frequency profile is a *policy choice* — which bands this bench is
+    # permitted to occupy — and it survives a restart, because a profile
+    # narrowed for antenna work quietly widening back to 70 MHz-6 GHz is a
+    # safety gate reverting with nobody told. It used to do exactly that:
+    # SafetyLimits() was constructed with its defaults on every start.
+    #
+    # Path attenuation is deliberately **not** persisted. It asserts "there is
+    # N dB in the cable path right now", which is a claim about physical
+    # cabling that only a person at the bench can make truthfully. Restoring
+    # it would re-assert yesterday's wiring on today's bench, and a restart is
+    # a good moment to force that claim to be made again. Policy persists;
+    # physical assertions do not.
+
+    def _restore_frequency_profile(self) -> dict:
+        """Load the saved profile at startup, reporting what happened.
+
+        Never raises: a bench that cannot read its saved policy must still
+        start, but it must not pretend it restored one. The result is carried
+        into `/api/status` so "this is the default because the file was
+        unreadable" is visible rather than indistinguishable from a
+        deliberate choice.
+        """
+        default = self.safety.limits.active_profile
+        out = {"source": "default", "profile": default, "note": None}
+        if not os.path.exists(self._safety_state_path):
+            return out
+        try:
+            with open(self._safety_state_path, encoding="utf-8") as f:
+                saved = json.load(f)
+            name = saved.get("active_profile")
+        except Exception as exc:  # noqa: BLE001
+            out["note"] = (
+                f"Saved safety policy could not be read ({exc}), so the "
+                f"frequency profile is the built-in default '{default}'. "
+                "Check it before transmitting.")
+            self.safety.audit("frequency_profile_restore_failed",
+                              error=str(exc), profile=default)
+            return out
+        if name == default:
+            out["source"] = "restored"
+            return out
+        if name not in self.safety.limits.frequency_profiles:
+            out["note"] = (
+                f"Saved frequency profile '{name}' no longer exists, so the "
+                f"built-in default '{default}' is active. Check it before "
+                "transmitting.")
+            self.safety.audit("frequency_profile_restore_failed",
+                              missing_profile=name, profile=default)
+            return out
+        self.safety.limits.active_profile = name
+        out.update(source="restored", profile=name)
+        self.safety.audit("frequency_profile_restored", profile=name)
+        return out
+
+    def _save_frequency_profile(self) -> None:
+        """Persist the policy. A failure here must be loud, not silent."""
+        tmp = self._safety_state_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self._safety_state_path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"active_profile": self.safety.limits.active_profile,
+                           "saved_at": time.time()}, f, indent=1)
+            os.replace(tmp, self._safety_state_path)   # atomic
+        except Exception as exc:  # noqa: BLE001
+            # Leave no half-written file behind: the next start reads this
+            # directory, and a stray .tmp is clutter at best and confusing at
+            # worst when someone is working out why a profile did not stick.
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            self.safety.audit("frequency_profile_save_failed", error=str(exc))
+            raise
+
     def set_frequency_profile(self, name: str) -> dict:
         """Change the active profile, withdrawing any TX it no longer covers."""
         if name not in self.safety.limits.frequency_profiles:
             raise KeyError(f"unknown frequency profile: {name}")
         self.safety.limits.active_profile = name
         self.safety.audit("frequency_profile_changed", profile=name)
+        saved, save_error = True, None
+        try:
+            self._save_frequency_profile()
+        except Exception as exc:  # noqa: BLE001 - the change still applies
+            saved, save_error = False, str(exc)
+        self.profile_restore = {"source": "set", "profile": name, "note": None}
         revoked = self.enforce_tx_authorization(f"frequency profile -> {name}")
         status = self.safety.status()
         if revoked:
             status["tx_revoked"] = revoked
+        if not saved:
+            # Applied in memory but it will not survive a restart, which is
+            # the whole failure this persistence exists to end.
+            status["profile_not_saved"] = (
+                f"'{name}' is active now but could not be saved ({save_error}), "
+                "so a restart will return to the built-in default.")
         return status
 
     # -- vector network analyser (FR-RFC-003/004) --------------------------
@@ -1946,7 +2037,12 @@ class Runtime:
         return {
             "version": __import__("forge_vision").__version__,
             "devices": [self._describe_device(d) for d in self.devices.values()],
-            "safety": self.safety.status(),
+            # Where the active frequency profile came from. A profile that is
+            # the built-in default because a saved one could not be read is a
+            # different claim from one the operator chose, and the UI has to
+            # be able to tell them apart.
+            "safety": {**self.safety.status(),
+                       "profile_source": self.profile_restore},
             "acquisition_stopped": self.stop_acquisition.is_set(),
             "storage": self.store.storage_stats(),
             "recent_experiments": self.store.list()[:8],

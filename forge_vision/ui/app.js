@@ -208,6 +208,18 @@ async function refreshStatus() {
   refreshPositionUi();
 }
 
+// The frequency profile persists across restarts. When it could *not* be
+// restored the platform falls back to the built-in default, and that has to
+// look different from a profile the operator chose — silently widening from
+// an ISM profile back to 70 MHz-6 GHz is the failure this persistence exists
+// to end, and it would be invisible if the row just showed a name.
+function profileSourceNote(sf) {
+  const src = sf.profile_source;
+  if (!src || !src.note) return "";
+  return ` <span class="tag" style="background:#2b2410;border:1px solid #5c4c1c;
+    color:#e8c96a" title="${esc(src.note)}">default — not restored</span>`;
+}
+
 function renderDashboard() {
   const s = STATUS;
   renderDeviceCards(s.devices);
@@ -227,7 +239,7 @@ function renderDashboard() {
         ? `<span style="color:var(--warn)">armed by ${esc(sf.armed_by)}</span>`
         : "disarmed"}</span></div>
     <div class="sysrow"><span class="k">Safety profile</span>
-      <span>${esc(sf.limits.active_profile)}</span></div>
+      <span>${esc(sf.limits.active_profile)}${profileSourceNote(sf)}</span></div>
     <div class="sysrow"><span class="k">Scans in progress</span>
       <span>${Object.keys(s.active_scans).length}</span></div>`;
   refreshRadioBook();
