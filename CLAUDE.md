@@ -12,7 +12,7 @@ to that document — keep citing them, it is how coverage is tracked.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
-.venv/bin/python -m pytest tests/          # 342 tests, ~3 min
+.venv/bin/python -m pytest tests/          # 356 tests, ~3 min
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
@@ -302,15 +302,12 @@ produced a longer list; these are the parts that survived verification:
    reprocessed or independently checked, which is rule 4 unmet in spirit. Save
    each step as a segment, create the experiment before the sweep, and
    finalize as partial on cancellation.
-2. **Persistent safety and calibration state.** Two things live only in memory
-   and are silently lost on restart. The **active frequency profile** is the
-   urgent one — it reverts to `bench_cabled` (70 MHz – 6 GHz) every start, so
-   a profile narrowed for antenna work quietly widens again; that is a safety
-   gate reverting without telling anyone. Then `runtime.calibration`, an
-   in-memory dict that is simply lost — and which also needs to record what it
-   was taken with (waveform, gains, chain, frequency span) and refuse to apply
-   against an incompatible configuration, the same way chain configurations
-   already do.
+2. **Persistent calibration.** The frequency profile half of this was done on
+   2026-08-01 (`safety_state.json`, see Gotchas) — `runtime.calibration`
+   remains an in-memory dict that is simply lost on restart, and which also
+   needs to record what it was taken with (waveform, gains, chain, frequency
+   span) and refuse to apply against an incompatible configuration, the same
+   way chain configurations already do.
    The VNA path now solves the same problem and is the model to copy: a stored
    measurement carries a `calibration` record that stays `known: false` until
    evidence says otherwise, and `analyze_thru_residual()` produces that
@@ -423,17 +420,21 @@ because the hardware never moves. Wire those through `_apply()` and
 
 ## Gotchas
 
-- **The active frequency profile does not survive a restart.** `SafetyLimits()`
-  is constructed with its defaults in `Runtime.__init__` and nothing persists
-  `active_profile`, so every start silently returns to **`bench_cabled`
-  (70 MHz – 6 GHz)** — the closed-circuit profile. Observed on 2026-07-31:
-  the profile was deliberately narrowed to `ism_conservative` because antennas
-  had gone on the bench, and a later service restart widened it back with no
-  notice. Check `safety.limits.active_profile` in `/api/status` after any
-  restart, and re-set it before radiating. This is the same in-memory-state
-  defect as engineering-queue item 2 (`runtime.calibration`) and wants the
-  same fix; the profile is arguably the more urgent of the two, because it is
-  a safety gate rather than a correction.
+- **The active frequency profile persists; path attenuation and arming do
+  not, deliberately.** The profile is stored in `safety_state.json` in the
+  data dir and restored at startup. It did not used to be: `SafetyLimits()`
+  was constructed with its defaults on every start, so a profile narrowed to
+  `ism_conservative` for antenna work silently widened back to `bench_cabled`
+  (70 MHz – 6 GHz) on the next restart — observed on 2026-07-31, fixed
+  2026-08-01. The split is the point: a **policy** ("which bands this bench
+  may occupy") is a decision that should outlive a restart, while path
+  attenuation asserts *"there is N dB in the cable path right now"* — a claim
+  about physical wiring that only a person at the bench can make, and which a
+  restart is a good moment to force again. `status().safety.profile_source`
+  says whether the active profile was `restored`, `set` this session, or is
+  the built-in `default` because the saved one could not be read; the last of
+  those carries a note and shows in the UI, because "defaulted" and "chosen"
+  must not look alike.
 
 - `pkill -f 'uvicorn forge_vision'` matches the killing shell's own command
   line. Put the kill in its own step and use a bracket pattern:
