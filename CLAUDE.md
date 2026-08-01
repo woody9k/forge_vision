@@ -12,7 +12,7 @@ to that document — keep citing them, it is how coverage is tracked.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
-.venv/bin/python -m pytest tests/          # 356 tests, ~3 min
+.venv/bin/python -m pytest tests/          # 380 tests, ~3 min
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
@@ -302,11 +302,9 @@ produced a longer list; these are the parts that survived verification:
    reprocessed or independently checked, which is rule 4 unmet in spirit. Save
    each step as a segment, create the experiment before the sweep, and
    finalize as partial on cancellation.
-2. **Persistent calibration and device configuration.** The frequency profile
-   half of this was done on 2026-08-01 (`safety_state.json`, see Gotchas).
-   Still outstanding: **device configuration**, which resets to
-   `DeviceConfig()` defaults on every start and is pushed at the radio by
-   `connect()`, so a restart silently retunes the bench; and
+2. **Persistent calibration.** The frequency profile and device configuration
+   halves of this were done on 2026-08-01 (`safety_state.json` and
+   `device_configs.json`, see Gotchas). Still outstanding:
    `runtime.calibration`, an in-memory dict that is simply lost, and which also
    needs to record what it was taken with (waveform, gains, chain, frequency
    span) and refuse to apply against an incompatible configuration, the same
@@ -423,14 +421,19 @@ because the hardware never moves. Wire those through `_apply()` and
 
 ## Gotchas
 
-- **Device configuration does not persist across a restart.** `DeviceConfig()`
-  is constructed fresh for every registration, so centre frequency, sample
-  rate and both gains return to their defaults (915 MHz, 61.44 MSPS clamped to
-  the device, RX 40 dB, TX −30 dB) every time the service starts, and
-  `connect()` pushes them at the radio. An operator who sets RX gain and then
-  sees it back at 40 after a restart is not imagining it. Same class as the
-  frequency profile, which is now fixed; this one is not, and it is worth
-  doing next because a restart currently retunes a bench mid-experiment.
+- **Device configuration persists** in `device_configs.json`, keyed by device
+  id, restored at registration and therefore before `connect()` pushes it at
+  the radio. It did not until 2026-08-01: `DeviceConfig()` was constructed
+  fresh every registration, so centre frequency, sample rate and both gains
+  reverted to defaults on every start and a restart silently retuned the
+  bench. A restored configuration is **clamped to the device it is being
+  applied to** — the saved values may predate a firmware change or belong to a
+  different radio at the same address — and anything the clamp moves is
+  reported in `config_source.note`, not swallowed. `config_source.source`
+  distinguishes `restored` from `default`, because "the radio is at 915 MHz"
+  and "nobody chose 915 MHz" are different claims. Restoring settings does not
+  restore permission: arming still does not persist, and a restored TX gain is
+  re-checked by the fingerprint before it can key anything.
 - **The active frequency profile persists; path attenuation and arming do
   not, deliberately.** The profile is stored in `safety_state.json` in the
   data dir and restored at startup. It did not used to be: `SafetyLimits()`

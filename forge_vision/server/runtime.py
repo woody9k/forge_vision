@@ -95,6 +95,10 @@ class Runtime:
             SafetyLimits(), os.path.join(self.data_dir, "logs", "safety_audit.jsonl"))
         self._safety_state_path = os.path.join(self.data_dir, "safety_state.json")
         self.profile_restore = self._restore_frequency_profile()
+        self._device_config_path = os.path.join(self.data_dir,
+                                                "device_configs.json")
+        self._saved_device_configs = self._load_device_configs()
+        self.device_config_restore: dict[str, dict] = {}
         self.devices: dict[str, object] = {}
         self.device_locks: dict[str, threading.Lock] = {}
         self.calibration: dict[str, dict] = {}       # device_id -> assets
@@ -122,6 +126,10 @@ class Runtime:
             "background": None,
             "leakage_baseline": None,
         })
+        # Before anything connects: `connect()` calls `_apply()`, so restoring
+        # here means the radio is brought up on the operator's settings rather
+        # than on defaults that are then pushed at it.
+        self._restore_device_config(dev)
 
     def _discover_hardware(self) -> None:
         try:
@@ -459,7 +467,14 @@ class Runtime:
         # entirely: tx gain could go from -30 dB to 0 dB, or the radio could be
         # walked outside the active frequency profile, without revalidation.
         self.enforce_tx_authorization(f"device {device_id} reconfigured")
-        return self._describe_device(dev)
+        out = self._describe_device(dev)
+        try:
+            self._save_device_config(dev)
+        except Exception as exc:  # noqa: BLE001 - the change still applies
+            out["config_not_saved"] = (
+                f"Applied now, but could not be saved ({exc}), so a restart "
+                "will return this radio to its defaults.")
+        return out
 
     # -- safety ------------------------------------------------------------
     def emergency_stop(self) -> dict:
@@ -600,6 +615,80 @@ class Runtime:
     # it would re-assert yesterday's wiring on today's bench, and a restart is
     # a good moment to force that claim to be made again. Policy persists;
     # physical assertions do not.
+
+    # -- persisted device configuration ------------------------------------
+    #
+    # `DeviceConfig()` was constructed fresh for every registration, so centre
+    # frequency, sample rate and both gains returned to their defaults on
+    # every start — and `connect()` pushes them at the radio, so a restart
+    # silently retuned the bench. An operator who sets a gain, restarts the
+    # service and finds it back at 40 dB is not imagining it.
+    #
+    # Restoring what the operator last chose is the least surprising
+    # behaviour, and safe: transmit still requires arming, which deliberately
+    # does not persist, and any restored gain is re-checked by the TX
+    # fingerprint before it can key anything.
+
+    def _load_device_configs(self) -> dict:
+        if not os.path.exists(self._device_config_path):
+            return {}
+        try:
+            with open(self._device_config_path, encoding="utf-8") as f:
+                saved = json.load(f)
+            return saved if isinstance(saved, dict) else {}
+        except Exception as exc:  # noqa: BLE001 - a bad file must not stop boot
+            self.safety.audit("device_config_restore_failed", error=str(exc))
+            return {}
+
+    def _restore_device_config(self, dev) -> None:
+        """Apply the saved configuration to a freshly registered device.
+
+        Clamped to whatever this device actually is: the saved values may
+        have come from a different radio at the same address, or from before
+        a firmware change moved the limits. `clamp_config` reports what it
+        had to move, and those notes are kept rather than discarded.
+        """
+        saved = self._saved_device_configs.get(dev.device_id)
+        if not saved:
+            return
+        try:
+            fields = {k: v for k, v in saved.items()
+                      if k in DeviceConfig().to_dict()}
+            cfg, notes = dev.clamp_config(DeviceConfig(**fields))
+        except Exception as exc:  # noqa: BLE001
+            self.safety.audit("device_config_restore_failed",
+                              device=dev.device_id, error=str(exc))
+            self.device_config_restore[dev.device_id] = {
+                "source": "default",
+                "note": f"Saved configuration could not be applied ({exc}); "
+                        "the device is on its built-in defaults."}
+            return
+        dev.config = cfg
+        self.device_config_restore[dev.device_id] = {
+            "source": "restored",
+            "note": ("Adjusted to this device's limits: " + "; ".join(notes)
+                     if notes else None),
+        }
+        self.safety.audit("device_config_restored", device=dev.device_id,
+                          config=cfg.to_dict(), clamped=notes or None)
+
+    def _save_device_config(self, dev) -> None:
+        """Record the operator's configuration so a restart does not undo it."""
+        self._saved_device_configs[dev.device_id] = dev.config.to_dict()
+        tmp = self._device_config_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self._device_config_path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._saved_device_configs, f, indent=1)
+            os.replace(tmp, self._device_config_path)   # atomic
+        except Exception as exc:  # noqa: BLE001
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            self.safety.audit("device_config_save_failed",
+                              device=dev.device_id, error=str(exc))
+            raise
 
     def _restore_frequency_profile(self) -> dict:
         """Load the saved profile at startup, reporting what happened.
@@ -2003,6 +2092,11 @@ class Runtime:
         # `null` here means "not checked yet", which is a different claim from
         # "in sync" and must not be rendered as one.
         d["sync"] = self._sync_records.get(dev.device_id)
+        # Whether this device came up on saved settings or on built-in
+        # defaults, so "the radio is at 915 MHz" and "nobody chose 915 MHz"
+        # are distinguishable.
+        d["config_source"] = self.device_config_restore.get(
+            dev.device_id, {"source": "default", "note": None})
         # How the radio is attached, in terms an operator reads rather than a
         # libiio URI: the same board over Ethernet and over USB behaves very
         # differently, and the dashboard should not make you infer which from
