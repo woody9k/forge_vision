@@ -78,6 +78,10 @@ def rx_protection_check(tx_gain_db: float, rx_gain_db: float,
             # so following the advice exactly reproduced this very warning,
             # and at `past` below 1 dB it read "add at least 0 dB".
             needed = math.floor(past) + 1
+            # `past` is printed to one decimal and `needed` as a whole number,
+            # so 6.96 dB reads as "7.0 dB past ... at least 7 dB more". That
+            # looks like the boundary bug this replaced, and is not: 7 clears
+            # 6.96. Two reviewers have now nearly re-flagged it.
             warnings.append(
                 f"Estimated {rx_input_dbm:.1f} dBm arriving at the receive "
                 f"port is {past:.1f} dB past ADC full scale before any "
