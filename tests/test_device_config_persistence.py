@@ -179,7 +179,42 @@ def test_switching_transport_carries_the_current_config_not_a_stale_one(tmp_path
     assert rt.device_config_restore["pluto-usb:"]["source"] == "carried"
 
 
-def test_every_transport_of_one_board_shares_a_saved_config(tmp_path):
+def test_a_serial_less_board_is_told_its_settings_are_per_transport(tmp_path):
+    """The bench's own radio reports an empty hw_serial — `discovery.py` calls
+    that "the common case" — so the alias gate is *closed* here and switching
+    transport then restarting silently presents a stale entry as the
+    operator's choice. The two tests below pass only because their fixtures
+    were handed a serial the real board does not have; this one is built from
+    what the bench actually reports."""
+    rt = restart(tmp_path)
+    dev = PreConnectedRadio("pluto-ip:192.168.99.222")
+    dev.discovery = {"identified_by": "attributes",
+                     "alternatives": [{"uri": "usb:"},
+                                      {"uri": "ip:192.168.99.222"}]}
+    rt._register(dev)
+    rt.configure("pluto-ip:192.168.99.222", {"center_frequency_hz": 2450e6})
+
+    described = [d for d in rt.status()["devices"]
+                 if d["device_id"] == "pluto-ip:192.168.99.222"][0]
+    src = described["config_source"]
+    assert src.get("saved_per_transport") is True
+    assert "no serial number" in src["note"]
+    assert "will not carry them across" in src["note"]
+
+
+def test_a_serial_identified_board_is_not_warned(tmp_path):
+    """The limitation is real only when the gate is closed."""
+    rt = restart(tmp_path)
+    dev = PreConnectedRadio("pluto-ip:bench")
+    dev.discovery = {"identified_by": "serial",
+                     "alternatives": [{"uri": "usb:"}, {"uri": "ip:bench"}]}
+    rt._register(dev)
+    described = [d for d in rt.status()["devices"]
+                 if d["device_id"] == "pluto-ip:bench"][0]
+    assert described["config_source"].get("saved_per_transport") is not True
+
+
+def test_every_transport_of_a_serial_identified_board_shares_a_saved_config(tmp_path):
     """Device ids are per-URI but the board is one radio. Saving under a
     single key meant a restart landing on the other transport restored a
     stale entry and called it `restored` — observed setting a radio to
@@ -236,7 +271,7 @@ def test_a_second_radio_is_not_configured_from_the_first(tmp_path):
         "source", "default") == "default"
 
 
-def test_a_restart_onto_the_other_transport_restores_the_last_choice(tmp_path):
+def test_a_serial_identified_board_restores_across_transports(tmp_path):
     rt = restart(tmp_path)
     dev = PreConnectedRadio("pluto-ip:bench")
     dev.discovery = {"identified_by": "serial",

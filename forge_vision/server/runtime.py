@@ -394,8 +394,11 @@ class Runtime:
         # transport switch back does exactly this) served `in_sync: true` for
         # a device nothing had checked, which inverts the rule that a missing
         # record must read as "not checked".
-        if device_id not in self.devices:
-            return {**status, "stale": "device was forgotten during the check"}
+        # Identity, not membership: forget-and-re-register under the same id
+        # (a transport switch away and back) would otherwise write the old
+        # adapter's result for the new one.
+        if self.devices.get(device_id) is not dev:
+            return {**status, "stale": "device was replaced during the check"}
         self._sync_records[device_id] = status
 
         was = previous.get("in_sync") if previous else None
@@ -766,8 +769,12 @@ class Runtime:
                     # silently would report a transient as a configuration.
                     status = dev.adopt_hardware_state()
                     recovered = True
-                except Exception:  # noqa: BLE001
-                    status = None
+                except Exception as read_exc:  # noqa: BLE001
+                    # Bind it. The outer handler reports its exception and
+                    # this one discarded its own, losing the difference
+                    # between "another process holds the USB handle" and "the
+                    # board re-enumerated" — the two documented causes.
+                    status, read_error = None, str(read_exc)
                 if recovered:
                     # Record what the re-read found, including anything
                     # adopting could not resolve. `None` here would mean "not
@@ -795,12 +802,14 @@ class Runtime:
                         "device_id": dev.device_id, "checked_at": time.time(),
                         "readable": False, "in_sync": None, "drift": [],
                         "error": "a configuration write failed part-way and "
-                                 "the device could not be read back",
+                                 f"the device could not be read back: "
+                                 f"{read_error}",
                     }
                     adopt_note = (" The write failed part-way, so the radio "
                                   "may hold a mixture of the old and new "
-                                  "settings, and reading it back also failed. "
-                                  "Its configuration is unverified.")
+                                  "settings, and reading it back also failed "
+                                  f"({read_error}). Its configuration is "
+                                  "unverified.")
                 self.safety.audit("device_config_restore_failed",
                                   device=dev.device_id, error=str(exc),
                                   stage="apply", read_back=recovered)
@@ -872,6 +881,26 @@ class Runtime:
                 if uri:
                     keys.append(f"pluto-{uri}")
         return list(dict.fromkeys(keys))
+
+    def _per_transport_note(self, dev) -> str:
+        """Say when settings are saved per transport rather than per board.
+
+        Gating the aliases on a serial number is right, but silently losing
+        the cross-transport restore is not: `discovery.py` calls an empty
+        `hw_serial` "the common case", so on a typical bench the gate is
+        *closed* and switching transport then restarting quietly presents a
+        stale entry as the operator's choice. `config_source` exists to keep
+        "the radio is at 915 MHz" apart from "nobody chose 915 MHz"; a
+        limitation nobody is told about belongs on the same side of that line.
+        """
+        info = getattr(dev, "discovery", {}) or {}
+        alts = info.get("alternatives") or []
+        if info.get("identified_by") == "serial" or len(alts) < 2:
+            return ""
+        return ("This radio reports no serial number, so its settings are "
+                "saved per transport rather than per board: switching "
+                "transport and restarting will not carry them across. Pin an "
+                "explicit URI if you need that.")
 
     def _save_device_config(self, dev) -> None:
         """Record the operator's configuration so a restart does not undo it."""
@@ -2305,13 +2334,19 @@ class Runtime:
         # Whether this device came up on saved settings or on built-in
         # defaults, so "the radio is at 915 MHz" and "nobody chose 915 MHz"
         # are distinguishable.
-        d["config_source"] = self.device_config_restore.get(
+        src = dict(self.device_config_restore.get(
             dev.device_id,
             {"source": "default",
              "note": (f"Saved device configuration could not be read "
                       f"({self._device_config_load_error}), so this radio is "
                       "on its built-in defaults. Check it before capturing."
-                      if self._device_config_load_error else None)})
+                      if self._device_config_load_error else None)}))
+        per_transport = self._per_transport_note(dev)
+        if per_transport:
+            src["note"] = " ".join(x for x in (src.get("note"),
+                                               per_transport) if x)
+            src["saved_per_transport"] = True
+        d["config_source"] = src
         # How the radio is attached, in terms an operator reads rather than a
         # libiio URI: the same board over Ethernet and over USB behaves very
         # differently, and the dashboard should not make you infer which from
