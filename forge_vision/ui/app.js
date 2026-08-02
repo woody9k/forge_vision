@@ -214,13 +214,22 @@ async function refreshStatus() {
 // default no matter what the platform actually held. `atten-db` is the one
 // that matters — it feeds the receive-protection estimate, and a form stuck
 // at 0 invites re-submitting 0 over a real declared value.
+const mirroredLastSynced = {};
+
 function syncServerMirroredFields() {
   const set = (id, value) => {
     const el = $(id);
-    // Never fight a keystroke: if the operator is in the field, it is theirs.
-    if (!el || document.activeElement === el || value === undefined
-        || value === null) return;
+    if (!el || value === undefined || value === null) return;
+    // Never fight a keystroke, and never fight an edit that has lost focus
+    // but not yet been submitted. `activeElement` alone is not enough: focus
+    // moves to the Declare button on mousedown, so a poll landing between
+    // mousedown and click would revert the field and submit the old value —
+    // and path attenuation is a safety declaration, not a preference.
+    const dirty = mirroredLastSynced[id] !== undefined
+      && String(el.value) !== String(mirroredLastSynced[id]);
+    if (document.activeElement === el || dirty) return;
     el.value = value;
+    mirroredLastSynced[id] = String(value);
   };
   if (STATUS && STATUS.safety) set("atten-db", STATUS.safety.path_attenuation_db);
   if (!configFormLoaded && $("live-device") && $("live-device").value) {
@@ -770,13 +779,22 @@ document.addEventListener("click", (ev) => {
 });
 
 $("atten-save").onclick = async () => {
+  const declared = parseFloat($("atten-db").value) || 0;
   await api("/api/safety/path_attenuation", { method: "POST",
-    body: { attenuation_db: parseFloat($("atten-db").value) || 0 } });
-  refreshRxProtection();
+    body: { attenuation_db: declared } });
+  // The edit is now the server's value, so it is no longer a pending edit;
+  // clearing this lets the poll resume tracking the field.
+  mirroredLastSynced["atten-db"] = String(declared);
+  refreshStatus();
 };
 
 async function refreshRxProtection() {
-  const dev = STATUS && STATUS.devices.length ? STATUS.devices[0].device_id : "";
+  // Not devices[0] — that is always sim-pluto-0, registered first. This panel
+  // was computing "estimated X dBm at the receive port" from the simulator's
+  // gains while naming no device, so setting a real radio's TX gain changed
+  // nothing here. Same hazard the device selectors were just fixed for, and
+  // under-warning about the radio actually in use is the worse direction.
+  const dev = (STATUS && preferredDevice(STATUS.devices)) || "";
   if (!dev) return;
   let c;
   try { c = await api(`/api/safety/rx_protection?device_id=${encodeURIComponent(dev)}`); }
@@ -803,10 +821,14 @@ async function refreshRxProtection() {
     ? (c.severity === "critical" ? "Receiver at risk — TX is live"
                                  : "Receive path warning — TX is live")
     : "Before you transmit";
+  // Name the radio. The figures come from one device's configuration and the
+  // bench has more than one, so an unattributed "this configuration" invites
+  // reading a simulator's numbers as the bench's.
   const lead = imminent
-    ? `estimated ${c.rx_input_dbm} dBm at the port.`
-    : `this configuration would put an estimated ${c.rx_input_dbm} dBm at the
-       receive port. Nothing is transmitting, so nothing is at risk yet.`;
+    ? `estimated ${c.rx_input_dbm} dBm at the port of <code>${esc(dev)}</code>.`
+    : `<code>${esc(dev)}</code>'s configuration would put an estimated
+       ${c.rx_input_dbm} dBm at the receive port. Nothing is transmitting, so
+       nothing is at risk yet.`;
   $("rx-protection").innerHTML =
     `<div class="alert ${cls}"><b>${esc(head)}</b> — ${lead}<br>
      ${c.warnings.map(esc).join("<br>")}

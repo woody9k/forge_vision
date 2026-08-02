@@ -80,7 +80,7 @@ Platform state: devices, safety, storage, waveforms.
     "tx_bandwidth": 56000000.0
    },
    "health": {
-    "time": 1785612045.4544919,
+    "time": 1785629721.1904585,
     "connected": false,
     "temperature_c": 41.0,
     "clock": "internal",
@@ -394,8 +394,8 @@ Estimated power at the receive port for the current settings.
  "path_attenuation_db": 0.0,
  "warnings": [
   "Estimated -23.0 dBm at the receive port. The front end will compress, so amplitudes and ranges derived from this capture will not be trustworthy.",
-  "Receive gain of 40 dB puts the signal 47 dB past ADC full scale; expect clipping. Reduce RX gain.",
-  "No path attenuation is declared. If transmit is cabled straight to receive, this will damage the receiver."
+  "Estimated -23.0 dBm arriving at the receive port is 7.0 dB past ADC full scale before any receive gain. Reducing RX gain cannot fix this \u2014 even at 0 dB it would still clip. This needs at least 8 dB more isolation or attenuation between transmit and receive.",
+  "No path attenuation is declared, so this estimate assumes transmit is cabled straight into receive with nothing between them \u2014 the worst case, and the number above rests on it. If the ports are on separate antennas the real isolation is far higher and these figures are pessimistic; declare it under Hardware so the estimate describes your bench. If transmit really is cabled to receive, this will damage the receiver."
  ],
  "thresholds": {
   "damage_dbm": -10.0,

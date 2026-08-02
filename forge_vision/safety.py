@@ -72,10 +72,15 @@ def rx_protection_check(tx_gain_db: float, rx_gain_db: float,
             # already past full scale before any gain is applied. Telling the
             # operator to turn the gain down here sends them to 0 dB, watching
             # the warning refuse to clear, with nothing explaining why.
-            needed = rx_input_dbm - RX_FULL_SCALE_DBM
+            past = rx_input_dbm - RX_FULL_SCALE_DBM
+            # Mirror of the `ceil() - 1` below. Quoting `past` itself lands
+            # the operator *on* full scale, which the `>=` test still trips —
+            # so following the advice exactly reproduced this very warning,
+            # and at `past` below 1 dB it read "add at least 0 dB".
+            needed = math.floor(past) + 1
             warnings.append(
                 f"Estimated {rx_input_dbm:.1f} dBm arriving at the receive "
-                f"port is {needed:.0f} dB past ADC full scale before any "
+                f"port is {past:.1f} dB past ADC full scale before any "
                 "receive gain. Reducing RX gain cannot fix this — even at "
                 f"0 dB it would still clip. This needs at least "
                 f"{needed:.0f} dB more isolation or attenuation between "

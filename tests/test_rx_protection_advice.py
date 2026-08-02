@@ -52,8 +52,43 @@ def test_the_advice_is_the_same_at_zero_gain_and_says_why():
 
 def test_it_says_how_much_isolation_would_actually_help():
     r = rx_protection_check(-30.0, 40.0, 0.0)
-    over = (PLUTO_TX_MAX_OUTPUT_DBM - 30.0) - RX_FULL_SCALE_DBM
-    assert f"{over:.0f} dB more isolation" in _fullscale_warning(r)
+    assert "more isolation" in _fullscale_warning(r)
+
+
+def _isolation_advice(result) -> float:
+    import re
+    m = re.search(r"at least (-?\d+) dB more isolation", _fullscale_warning(result))
+    return float(m.group(1)) if m else None
+
+
+def test_following_the_isolation_advice_actually_clears_the_warning():
+    """The first version quoted the boundary, so adding exactly what it asked
+    for landed *on* full scale and reproduced the same warning — the very
+    defect this module exists to prevent, in the sibling branch."""
+    for att in (0.0, 3.0, 6.6, 10.25, 13.0):
+        r = rx_protection_check(-30.0, 40.0, att)
+        needed = _isolation_advice(r)
+        if needed is None:
+            continue
+        after = rx_protection_check(-30.0, 0.0, att + needed)
+        assert _fullscale_warning(after) == "", (
+            f"path_attenuation={att}: advised {needed} dB and it did not clear")
+
+
+def test_the_isolation_advice_is_never_zero_or_negative():
+    """'Add at least 0 dB' is not advice."""
+    for att in [x * 0.25 for x in range(0, 60)]:
+        needed = _isolation_advice(rx_protection_check(-30.0, 40.0, att))
+        if needed is not None:
+            assert needed >= 1, f"path_attenuation={att} advised {needed} dB"
+
+
+def test_a_fractional_overshoot_is_not_reported_as_zero():
+    """0.4 dB past full scale must not print as '0 dB past' next to 'it clips'."""
+    r = rx_protection_check(-30.0, 40.0, 6.6)
+    w = _fullscale_warning(r)
+    if "cannot fix this" in w:
+        assert "0.0 dB past" not in w
 
 
 def test_a_reachable_gain_limit_is_given_when_gain_really_is_the_problem():
