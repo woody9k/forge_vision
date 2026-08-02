@@ -134,6 +134,12 @@ class Runtime:
         # hardware itself, not merely assign the cache. Only a device that is
         # still disconnected can rely on a later `connect()` to do it.
         self._restore_device_config(dev, carry_config=carry_config)
+        # Here rather than inside the restore, which has several early returns
+        # — including the common "no saved config" one — so the re-check would
+        # not have held for most registrations. A no-op today (every caller
+        # hands over an adapter with tx_enabled False), kept so the property
+        # holds by construction rather than by an invariant nothing asserts.
+        self.enforce_tx_authorization(f"{dev.device_id} registered")
 
     def _discover_hardware(self) -> None:
         try:
@@ -260,6 +266,11 @@ class Runtime:
         self.devices.pop(device_id, None)
         self.device_locks.pop(device_id, None)
         self.calibration.pop(device_id, None)
+        # Per-session records about a device that no longer exists. Left
+        # behind these accumulate across transport switches and would be
+        # served for a re-registered id that had not actually been checked.
+        self.device_config_restore.pop(device_id, None)
+        self._sync_records.pop(device_id, None)
         self.safety.audit("device_forgotten", device=device_id)
         return {"forgotten": device_id}
 
@@ -700,7 +711,8 @@ class Runtime:
                               device=dev.device_id, error=str(exc))
             self.device_config_restore[dev.device_id] = {
                 "source": "default",
-                "note": f"Saved configuration could not be applied ({exc}); "
+                "note": f"{origin.capitalize()} configuration could not be "
+                        f"applied ({exc}); "
                         "the device is on its built-in defaults."}
             return
 
@@ -727,16 +739,50 @@ class Runtime:
                 dev.configure(cfg)          # validates, and applies on real hardware
                 applied_to_hardware = True
             except Exception as exc:  # noqa: BLE001
+                # `_apply()` writes seven libiio attributes in sequence, so a
+                # failure part-way leaves the radio holding a *mixture* that
+                # neither `cfg` nor `before` describes. Rolling back to
+                # `before` only swaps one false claim for another. Ask the
+                # radio instead — this is what `resync_device` already does,
+                # and a read-back measures ~4 ms.
+                recovered, adopt_note = False, ""
+                try:
+                    actual = dev.read_hardware_config()
+                except Exception:  # noqa: BLE001
+                    actual = None
+                if actual:
+                    for field in before.to_dict():
+                        if field in actual:
+                            setattr(before, field, actual[field])
+                    recovered = True
                 dev.config = before
+                if not recovered:
+                    # Neither the radio nor our cache can be trusted, so do
+                    # not assert either. `in_sync: None` is "not checked",
+                    # which is a different claim from agreement.
+                    self._sync_records[dev.device_id] = {
+                        "device_id": dev.device_id, "checked_at": time.time(),
+                        "readable": False, "in_sync": None, "drift": [],
+                        "error": "a configuration write failed part-way and "
+                                 "the device could not be read back",
+                    }
+                    adopt_note = (" The write failed part-way, so the radio "
+                                  "may hold a mixture of the old and new "
+                                  "settings, and reading it back also failed. "
+                                  "Its configuration is unverified.")
+                else:
+                    adopt_note = (" The write failed part-way; the values "
+                                  "shown were read back from the radio "
+                                  "afterwards rather than assumed.")
                 self.safety.audit("device_config_restore_failed",
                                   device=dev.device_id, error=str(exc),
-                                  stage="apply")
+                                  stage="apply", read_back=recovered)
                 self.device_config_restore[dev.device_id] = {
                     "source": "default",
                     "applied_to_hardware": False,
-                    "note": f"Saved configuration was refused by the device "
-                            f"({exc}); it is on whatever it came up with. "
-                            "Check it before capturing."}
+                    "note": (f"Saved configuration was refused by the device "
+                             f"({exc})." + adopt_note +
+                             " Check it before capturing.")}
                 return
         else:
             # Not connected yet, so `connect()` will apply this for us.
@@ -755,18 +801,39 @@ class Runtime:
                           applied_to_hardware=applied_to_hardware,
                           origin=origin)
         if origin == "carried":
-            # The same board under a new device id: persist under the new key
+            # The same board under a new device id: persist under every alias
             # so the next restart restores what is actually on the radio.
             try:
                 self._save_device_config(dev)
-            except Exception:  # noqa: BLE001 - already audited
-                pass
-        # A no-op today — every caller hands over a freshly constructed adapter
-        # whose tx_enabled is False, so there is no authorization keyed to this
-        # device id to withdraw. Kept so the property holds by construction
-        # rather than by an invariant nothing asserts: a future reconnect-in-
-        # place path would otherwise carry a fingerprint across a config change.
-        self.enforce_tx_authorization(f"{dev.device_id} registered")
+            except Exception as exc:  # noqa: BLE001
+                # Auditing alone is not enough — swallowing this reintroduced
+                # exactly the defect fixed for `configure()`: the settings
+                # carry correctly, the save fails, and the next restart
+                # quietly reverts while still reporting `restored`.
+                self.device_config_restore[dev.device_id]["note"] = (
+                    (self.device_config_restore[dev.device_id]["note"] or "")
+                    + f" Carried onto this transport, but could not be saved "
+                      f"({exc}), so a restart will not keep it.").strip()
+
+    def _config_keys_for(self, dev) -> list:
+        """Every device id that names this same board.
+
+        Device ids are per-URI (`pluto-usb:`, `pluto-ip:192.168.99.222`) while
+        those are one radio — CLAUDE.md is explicit that registering it twice
+        gives entries whose cached configs silently diverge. Saving under one
+        key alone reproduced that on disk: switch transport, retune, restart,
+        and discovery picks whichever transport measures fastest, restores the
+        *other* key's stale entry, and reports `source: "restored"`. Observed
+        putting a radio on 2437 MHz / RX 40 dB when the operator's last choice
+        was 2450 MHz / RX 18 dB. Writing every alias keeps them from diverging.
+        """
+        keys = [dev.device_id]
+        info = getattr(dev, "discovery", {}) or {}
+        for alt in (info.get("alternatives") or []):
+            uri = alt.get("uri") if isinstance(alt, dict) else None
+            if uri:
+                keys.append(f"pluto-{uri}")
+        return list(dict.fromkeys(keys))
 
     def _save_device_config(self, dev) -> None:
         """Record the operator's configuration so a restart does not undo it."""
@@ -776,7 +843,9 @@ class Runtime:
         # device would silently persist the entry the operator had just been
         # told was not saved.
         candidate = dict(self._saved_device_configs)
-        candidate[dev.device_id] = dev.config.to_dict()
+        cfg = dev.config.to_dict()
+        for key in self._config_keys_for(dev):
+            candidate[key] = cfg
         tmp = self._device_config_path + ".tmp"
         try:
             os.makedirs(os.path.dirname(self._device_config_path), exist_ok=True)

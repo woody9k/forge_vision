@@ -179,6 +179,56 @@ def test_switching_transport_carries_the_current_config_not_a_stale_one(tmp_path
     assert rt.device_config_restore["pluto-usb:"]["source"] == "carried"
 
 
+def test_every_transport_of_one_board_shares_a_saved_config(tmp_path):
+    """Device ids are per-URI but the board is one radio. Saving under a
+    single key meant a restart landing on the other transport restored a
+    stale entry and called it `restored` — observed setting a radio to
+    2437 MHz / RX 40 dB when the last choice was 2450 MHz / RX 18 dB."""
+    rt = restart(tmp_path)
+    dev = PreConnectedRadio("pluto-ip:bench")
+    dev.discovery = {"uri": "ip:bench",
+                     "alternatives": [{"uri": "usb:"}, {"uri": "ip:bench"}]}
+    rt._register(dev)
+    rt.configure("pluto-ip:bench", {"center_frequency_hz": 2450e6,
+                                    "rx_gain_db": 18.0})
+
+    saved = rt._saved_device_configs
+    assert "pluto-usb:" in saved, "the other transport of the same board"
+    assert saved["pluto-usb:"]["center_frequency_hz"] == 2450e6
+    assert saved["pluto-usb:"]["rx_gain_db"] == 18.0
+
+
+def test_a_restart_onto_the_other_transport_restores_the_last_choice(tmp_path):
+    rt = restart(tmp_path)
+    dev = PreConnectedRadio("pluto-ip:bench")
+    dev.discovery = {"alternatives": [{"uri": "usb:"}, {"uri": "ip:bench"}]}
+    rt._register(dev)
+    rt.configure("pluto-ip:bench", {"center_frequency_hz": 2450e6,
+                                    "rx_gain_db": 18.0})
+
+    # discovery picks the faster transport next boot — a different device id
+    again = restart(tmp_path)
+    usb = PreConnectedRadio("pluto-usb:")
+    again._register(usb)
+    assert usb.pushed_to_hardware["center_frequency_hz"] == 2450e6
+    assert usb.pushed_to_hardware["rx_gain_db"] == 18.0
+
+
+def test_a_carry_that_cannot_be_saved_says_so(tmp_path, monkeypatch):
+    """Auditing alone reintroduced the swallowed-failure defect: the carry
+    works, the save fails, and the next restart quietly reverts."""
+    rt = restart(tmp_path)
+    rt._register(PreConnectedRadio("pluto-ip:bench"))
+    rt.configure("pluto-ip:bench", {"center_frequency_hz": 2437e6})
+
+    monkeypatch.setattr(os, "replace",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+    rt._register(PreConnectedRadio("pluto-usb:"),
+                 carry_config=rt.device("pluto-ip:bench").config)
+    note = rt.device_config_restore["pluto-usb:"]["note"] or ""
+    assert "could not be saved" in note
+
+
 def test_a_carried_config_is_saved_under_the_new_id(tmp_path):
     """So the next restart restores what is actually on the radio."""
     rt = restart(tmp_path)
@@ -253,26 +303,69 @@ def test_a_disconnected_device_validates_the_saved_config_too(tmp_path):
     assert "rx channel" in src["note"]
 
 
-def test_a_partial_hardware_write_does_not_leave_a_false_config(tmp_path):
-    """PlutoDevice.configure assigns then writes; a write that fails midway
-    must not leave `config` asserting what the radio does not hold."""
+class HalfWrites(PreConnectedRadio):
+    """A radio whose apply genuinely fails part-way through.
+
+    An earlier version of this fixture raised *before* writing anything, so
+    the radio really was at its starting values and the assertion held
+    vacuously — the docstring claimed "fails midway" and the fixture did not.
+    `PlutoDevice._apply()` writes seven libiio attributes in sequence, so it
+    updates some and abandons the rest.
+    """
+
+    def configure(self, cfg):
+        SimulatedPluto.configure(self, cfg)          # assigns self.config
+        # rate and bandwidth land; the LO and gains never do
+        self.pushed_to_hardware = {
+            **(self.pushed_to_hardware or {}),
+            "sample_rate_hz": cfg.sample_rate_hz,
+            "rx_bandwidth_hz": cfg.rx_bandwidth_hz,
+        }
+        raise ConfigurationError("libiio write failed after rx_rf_bandwidth")
+
+    def read_hardware_config(self):
+        return dict(self.pushed_to_hardware or {})
+
+
+def test_a_partial_write_reports_what_the_radio_actually_holds(tmp_path):
+    """Rolling back to the pre-restore config swaps one false claim for
+    another: after a partial write the radio holds a mixture neither
+    describes. Ask it instead."""
     rt = restart(tmp_path)
     rt._register(PreConnectedRadio("half-writer"))
-    rt.configure("half-writer", {"center_frequency_hz": 2437e6})
+    rt.configure("half-writer", {"sample_rate_hz": 20e6,
+                                 "rx_bandwidth_hz": 18e6})
+
+    again = restart(tmp_path)
+    dev = HalfWrites("half-writer")
+    again._register(dev)
+
+    # the two fields that did land must be what the API now reports
+    assert dev.config.sample_rate_hz == 20e6
+    assert dev.config.rx_bandwidth_hz == 18e6
+    src = again.device_config_restore["half-writer"]
+    assert src["source"] == "default"
+    assert "read back from the radio" in src["note"]
+
+
+def test_an_unreadable_radio_after_a_partial_write_is_not_asserted(tmp_path):
+    """If the read-back also fails, neither config is trustworthy — so the
+    platform must say it does not know rather than pick one."""
+    rt = restart(tmp_path)
+    rt._register(PreConnectedRadio("blind"))
+    # bandwidth must come down with the rate, or configure() refuses the pair
+    rt.configure("blind", {"sample_rate_hz": 20e6, "rx_bandwidth_hz": 18e6})
 
     again = restart(tmp_path)
 
-    class HalfWrites(PreConnectedRadio):
-        def configure(self, cfg):
-            SimulatedPluto.configure(self, cfg)      # assigns self.config
-            raise ConfigurationError("libiio write failed after sample_rate")
+    class Blind(HalfWrites):
+        def read_hardware_config(self):
+            raise OSError("libiio timed out")
 
-    dev = HalfWrites("half-writer")
-    started_at = dev.config.center_frequency_hz
-    again._register(dev)
-    assert dev.config.center_frequency_hz == started_at, (
-        "config must be rolled back to what the radio actually has")
-    assert again.device_config_restore["half-writer"]["source"] == "default"
+    again._register(Blind("blind"))
+    assert "unverified" in again.device_config_restore["blind"]["note"]
+    rec = again.sync_record("blind")
+    assert rec["in_sync"] is None and rec["readable"] is False
 
 
 def test_gain_clamps_are_reported_not_silent(tmp_path):
