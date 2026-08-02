@@ -216,6 +216,20 @@ async function refreshStatus() {
 // at 0 invites re-submitting 0 over a real declared value.
 const mirroredLastSynced = {};
 
+// An unsubmitted edit is held rather than overwritten, so the field can sit
+// disagreeing with the server for as long as the operator leaves it. Say so.
+// `atten-db` matters most: it is a safety declaration, and the receive
+// estimate rendered directly below it is computed from the server's value,
+// not from what is in the box.
+function showMirrorDrift(id, serverValue) {
+  const el = $(id + "-drift");
+  if (!el) return;
+  el.innerHTML = serverValue === null || serverValue === undefined ? ""
+    : `<span class="tag" style="background:#2b2410;border:1px solid #5c4c1c;
+       color:#e8c96a">declared: ${esc(String(serverValue))} — not what is in
+       this box</span>`;
+}
+
 function syncServerMirroredFields() {
   const set = (id, value) => {
     const el = $(id);
@@ -227,7 +241,17 @@ function syncServerMirroredFields() {
     // and path attenuation is a safety declaration, not a preference.
     const dirty = mirroredLastSynced[id] !== undefined
       && String(el.value) !== String(mirroredLastSynced[id]);
-    if (document.activeElement === el || dirty) return;
+    if (document.activeElement === el || dirty) {
+      // Holding the operator's edit is right, but doing it silently is not:
+      // the box would read 45 dB while the platform computed the receive
+      // estimate below from 60 dB, indefinitely and with nothing on screen.
+      // Same reasoning as cfg-drift on the config form.
+      if (dirty && String(el.value) !== String(value)) {
+        showMirrorDrift(id, value);
+      }
+      return;
+    }
+    showMirrorDrift(id, null);
     el.value = value;
     mirroredLastSynced[id] = String(value);
   };

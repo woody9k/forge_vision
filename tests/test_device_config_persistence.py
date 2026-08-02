@@ -153,6 +153,44 @@ def test_a_device_the_hardware_refuses_is_not_reported_as_restored(tmp_path):
     assert "refused by the device" in src["note"]
 
 
+# -- the same board reached a different way -----------------------------------
+
+def test_switching_transport_carries_the_current_config_not_a_stale_one(tmp_path):
+    """`usb:` and `ip:...` are the same board, but device ids are per-URI, so
+    the new entry would restore *its own* saved key — pushing an old
+    configuration onto the radio and calling it `restored` at the moment it
+    discarded the operator's current one."""
+    rt = restart(tmp_path)
+
+    old = PreConnectedRadio("pluto-ip:bench")
+    rt._register(old)
+    rt.configure("pluto-ip:bench", {"center_frequency_hz": 2437e6,
+                                    "rx_gain_db": 12.0})
+    # a stale configuration saved months ago under the other transport
+    rt._saved_device_configs["pluto-usb:"] = {
+        **DeviceConfig().to_dict(), "center_frequency_hz": 433e6,
+        "rx_gain_db": 40.0}
+
+    new = PreConnectedRadio("pluto-usb:")
+    rt._register(new, carry_config=rt.device("pluto-ip:bench").config)
+
+    assert new.pushed_to_hardware["center_frequency_hz"] == 2437e6, (
+        "the operator's current settings must follow the board")
+    assert rt.device_config_restore["pluto-usb:"]["source"] == "carried"
+
+
+def test_a_carried_config_is_saved_under_the_new_id(tmp_path):
+    """So the next restart restores what is actually on the radio."""
+    rt = restart(tmp_path)
+    old = PreConnectedRadio("pluto-ip:bench")
+    rt._register(old)
+    rt.configure("pluto-ip:bench", {"center_frequency_hz": 2437e6})
+    rt._register(PreConnectedRadio("pluto-usb:"),
+                 carry_config=rt.device("pluto-ip:bench").config)
+    assert (rt._saved_device_configs["pluto-usb:"]["center_frequency_hz"]
+            == 2437e6)
+
+
 # -- restoring must not smuggle anything past the interlock ------------------
 
 def test_a_restored_config_does_not_arm_anything(tmp_path):
@@ -195,6 +233,47 @@ def test_clamping_is_reported_not_silent(tmp_path):
 
 
 # -- failure paths -----------------------------------------------------------
+
+def test_a_disconnected_device_validates_the_saved_config_too(tmp_path):
+    """clamp_config does not touch channel indices, so without an explicit
+    validate the disconnected path accepted and reported an rx_channel no
+    adapter would honour — while the connected path refused the same file."""
+    rt = restart(tmp_path)
+    rt.configure(SIM, {"rx_gain_db": 12.0})
+    with open(rt._device_config_path, encoding="utf-8") as f:
+        saved = json.load(f)
+    saved[SIM]["rx_channel"] = 7
+    with open(rt._device_config_path, "w", encoding="utf-8") as f:
+        json.dump(saved, f)
+
+    again = restart(tmp_path)
+    assert again.device(SIM).config.rx_channel == DeviceConfig().rx_channel
+    src = again.device_config_restore[SIM]
+    assert src["source"] == "default"
+    assert "rx channel" in src["note"]
+
+
+def test_a_partial_hardware_write_does_not_leave_a_false_config(tmp_path):
+    """PlutoDevice.configure assigns then writes; a write that fails midway
+    must not leave `config` asserting what the radio does not hold."""
+    rt = restart(tmp_path)
+    rt._register(PreConnectedRadio("half-writer"))
+    rt.configure("half-writer", {"center_frequency_hz": 2437e6})
+
+    again = restart(tmp_path)
+
+    class HalfWrites(PreConnectedRadio):
+        def configure(self, cfg):
+            SimulatedPluto.configure(self, cfg)      # assigns self.config
+            raise ConfigurationError("libiio write failed after sample_rate")
+
+    dev = HalfWrites("half-writer")
+    started_at = dev.config.center_frequency_hz
+    again._register(dev)
+    assert dev.config.center_frequency_hz == started_at, (
+        "config must be rolled back to what the radio actually has")
+    assert again.device_config_restore["half-writer"]["source"] == "default"
+
 
 def test_gain_clamps_are_reported_not_silent(tmp_path):
     """Every other field reported what the clamp moved; gains did not — and a

@@ -15,7 +15,7 @@ import time
 import numpy as np
 
 from ..config import DEFAULT_DATA_DIR, MEDIA_PRESETS, Medium, SafetyLimits
-from ..devices.base import DeviceConfig
+from ..devices.base import ConfigurationError, DeviceConfig
 from ..devices.replay import ReplayDevice
 from ..devices.simulated import (SceneTarget, SimScene, SimulatedPluto,
                                  default_bench_scene, default_scan_scene)
@@ -118,7 +118,7 @@ class Runtime:
         self._discover_hardware()
 
     # -- devices -----------------------------------------------------------
-    def _register(self, dev) -> None:
+    def _register(self, dev, carry_config=None) -> None:
         self.devices[dev.device_id] = dev
         self.device_locks[dev.device_id] = threading.Lock()
         self.calibration.setdefault(dev.device_id, {
@@ -126,10 +126,14 @@ class Runtime:
             "background": None,
             "leakage_baseline": None,
         })
-        # Before anything connects: `connect()` calls `_apply()`, so restoring
-        # here means the radio is brought up on the operator's settings rather
-        # than on defaults that are then pushed at it.
-        self._restore_device_config(dev)
+        # Note the ordering, because it is the opposite of what it looks like:
+        # a real radio arrives here **already connected**, since
+        # `PlutoDevice.discover()` calls `connect()` before the runtime ever
+        # sees the device and `connect()` has already pushed defaults at the
+        # hardware. `_restore_device_config` therefore has to apply to the
+        # hardware itself, not merely assign the cache. Only a device that is
+        # still disconnected can rely on a later `connect()` to do it.
+        self._restore_device_config(dev, carry_config=carry_config)
 
     def _discover_hardware(self) -> None:
         try:
@@ -278,10 +282,17 @@ class Runtime:
         target = PlutoDevice(uri)
         target.connect()                    # fail before tearing anything down
         old_discovery = getattr(dev, "discovery", {}) or {}
+        # Saved configurations are keyed by device id, which is per-URI, while
+        # `usb:`, `ip:192.168.99.222` and `ip:192.168.2.1` are all one board.
+        # Letting the new entry restore *its* key would push a stale saved
+        # configuration onto the radio and report it as `restored` at the
+        # moment it discarded the operator's current one. Carry the settings
+        # across instead: this is the same board, reached another way.
+        carried = dev.config
         self.forget_device(device_id)
         target.discovery = {**old_discovery, "uri": uri,
                             "reason": f"switched by operator to {uri}"}
-        self._register(target)
+        self._register(target, carry_config=carried)
         self.safety.audit("device_transport_switched",
                           device=target.device_id, uri=uri, was=device_id)
         return self._describe_device(target)
@@ -655,7 +666,7 @@ class Runtime:
             self.safety.audit("device_config_restore_failed", error=str(exc))
             return {}
 
-    def _restore_device_config(self, dev) -> None:
+    def _restore_device_config(self, dev, carry_config=None) -> None:
         """Apply the saved configuration to a freshly registered device.
 
         Clamped to whatever this device actually is: the saved values may
@@ -663,13 +674,27 @@ class Runtime:
         a firmware change moved the limits. `clamp_config` reports what it
         had to move, and those notes are kept rather than discarded.
         """
-        saved = self._saved_device_configs.get(dev.device_id)
+        origin = "carried"
+        saved = None
+        if carry_config is not None:
+            saved = carry_config.to_dict()
+        else:
+            origin = "restored"
+            saved = self._saved_device_configs.get(dev.device_id)
         if not saved:
             return
         try:
             fields = {k: v for k, v in saved.items()
                       if k in DeviceConfig().to_dict()}
             cfg, notes = dev.clamp_config(DeviceConfig(**fields))
+            # `clamp_config` fits the continuous knobs; it does not look at
+            # channel indices or buffer size. Without this, a disconnected
+            # device accepted and reported a saved `rx_channel` no adapter
+            # would honour — the connected path caught it only because
+            # `configure()` happens to validate.
+            problems = dev.validate_config(cfg)
+            if problems:
+                raise ConfigurationError("; ".join(problems))
         except Exception as exc:  # noqa: BLE001
             self.safety.audit("device_config_restore_failed",
                               device=dev.device_id, error=str(exc))
@@ -690,15 +715,25 @@ class Runtime:
         # would then report it as externally-caused drift.
         applied_to_hardware = False
         if getattr(dev, "connected", False):
+            # `PlutoDevice.configure` assigns `self.config` and *then* writes
+            # seven libiio attributes, any of which can fail — a board that
+            # re-enumerated after a reflash is documented. Without this
+            # snapshot a partial write left `config` holding what we asked for
+            # while the radio held something else, which is the same false
+            # claim this whole path exists to remove, surviving in the error
+            # branch.
+            before = dev.config
             try:
                 dev.configure(cfg)          # validates, and applies on real hardware
                 applied_to_hardware = True
             except Exception as exc:  # noqa: BLE001
+                dev.config = before
                 self.safety.audit("device_config_restore_failed",
                                   device=dev.device_id, error=str(exc),
                                   stage="apply")
                 self.device_config_restore[dev.device_id] = {
                     "source": "default",
+                    "applied_to_hardware": False,
                     "note": f"Saved configuration was refused by the device "
                             f"({exc}); it is on whatever it came up with. "
                             "Check it before capturing."}
@@ -711,13 +746,27 @@ class Runtime:
         if notes:
             detail.append("Adjusted to this device's limits: " + "; ".join(notes))
         self.device_config_restore[dev.device_id] = {
-            "source": "restored",
+            "source": origin,
             "applied_to_hardware": applied_to_hardware,
             "note": " ".join(detail) or None,
         }
         self.safety.audit("device_config_restored", device=dev.device_id,
                           config=cfg.to_dict(), clamped=notes or None,
-                          applied_to_hardware=applied_to_hardware)
+                          applied_to_hardware=applied_to_hardware,
+                          origin=origin)
+        if origin == "carried":
+            # The same board under a new device id: persist under the new key
+            # so the next restart restores what is actually on the radio.
+            try:
+                self._save_device_config(dev)
+            except Exception:  # noqa: BLE001 - already audited
+                pass
+        # A no-op today — every caller hands over a freshly constructed adapter
+        # whose tx_enabled is False, so there is no authorization keyed to this
+        # device id to withdraw. Kept so the property holds by construction
+        # rather than by an invariant nothing asserts: a future reconnect-in-
+        # place path would otherwise carry a fingerprint across a config change.
+        self.enforce_tx_authorization(f"{dev.device_id} registered")
 
     def _save_device_config(self, dev) -> None:
         """Record the operator's configuration so a restart does not undo it."""
