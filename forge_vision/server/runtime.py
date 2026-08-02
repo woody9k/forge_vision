@@ -39,6 +39,71 @@ from ..sites import SiteStore, depth_slice, fuse_targets, scan_path
 from ..waveforms import CATALOG
 
 
+def bin_by_bearing(points: list, bin_deg: float = 5.0) -> dict:
+    """Group power measurements into bearing bins (FR-POS-003, FR-ACQ-001).
+
+    A bearing the antenna never pointed at is **unmeasured**, and that is not
+    the same claim as "nothing was there". Empty bins are returned with
+    `samples: 0` and a null level rather than a floor value, so a polar plot
+    can leave that sector blank instead of drawing a hole in the pattern that
+    looks like a null the antenna does not have.
+
+    Each bin also carries how many captures landed in it. A sector crossed
+    once while swinging the antenna is a weaker claim than one held steady,
+    and the display should be able to say so.
+    """
+    if bin_deg <= 0:
+        raise ValueError("bearing bin size must be positive")
+    count = int(round(360.0 / bin_deg))
+    bins = [{"bearing_deg": round(i * 360.0 / count, 3), "samples": 0,
+             "peak_dbfs": None, "mean_dbfs": None, "spread_db": None,
+             "clipped": False} for i in range(count)]
+    buckets: dict = {}
+    for p in points:
+        heading = p.get("heading_deg")
+        if heading is None or p.get("peak_dbfs") is None:
+            continue                       # no bearing: cannot place it
+        idx = int(round((heading % 360.0) / 360.0 * count)) % count
+        buckets.setdefault(idx, []).append(p)
+
+    for idx, group in buckets.items():
+        levels = [g["peak_dbfs"] for g in group]
+        b = bins[idx]
+        b["samples"] = len(group)
+        b["peak_dbfs"] = round(max(levels), 1)
+        b["mean_dbfs"] = round(sum(levels) / len(levels), 1)
+        b["spread_db"] = round(max(levels) - min(levels), 1)
+        b["clipped"] = any(g.get("clipped") for g in group)
+
+    measured = [b for b in bins if b["samples"]]
+    covered = len(measured)
+    out = {
+        "bin_deg": bin_deg,
+        "bins": bins,
+        "bins_measured": covered,
+        "bins_total": count,
+        "coverage": round(covered / count, 3),
+        "unmeasured_bearings": [b["bearing_deg"] for b in bins
+                                if not b["samples"]],
+    }
+    if measured:
+        best = max(measured, key=lambda b: b["peak_dbfs"])
+        out["strongest"] = {"bearing_deg": best["bearing_deg"],
+                            "peak_dbfs": best["peak_dbfs"],
+                            "samples": best["samples"]}
+        # Front-to-back needs the bin 180 degrees round to have been visited;
+        # without it the ratio is not available rather than zero.
+        opposite = bins[(bins.index(best) + count // 2) % count]
+        if opposite["samples"]:
+            out["front_to_back_db"] = round(
+                best["peak_dbfs"] - opposite["peak_dbfs"], 1)
+        else:
+            out["front_to_back_note"] = (
+                f"The bearing opposite the strongest ({opposite['bearing_deg']:.0f}"
+                "°) was never measured, so front-to-back ratio is unavailable.")
+    return out
+
+
 def _survey_point(freq_hz: float, seg) -> dict:
     """Occupancy statistics for one tuning step of a band survey."""
     iq = seg.iq
@@ -912,7 +977,7 @@ class Runtime:
         return ("This radio reports no serial number, so its settings are "
                 "saved per transport rather than per board. Anything changed "
                 "after switching transport is saved only under that "
-                "transport; if the platform later comes up on the other one — "
+                "transport; if the platform later comes up on a different one — "
                 "because you switched back, or because discovery picked "
                 "differently — it restores that transport's own last-saved "
                 "settings, or its defaults if it has none. Pin an explicit "
@@ -2035,6 +2100,116 @@ class Runtime:
             f"compare {a_id} with {b_id}"))
 
     # -- band survey (receive only) ------------------------------------------
+    def bearing_sweep(self, device_id: str, center_hz: float | None = None,
+                      duration_s: float = 60.0, bin_deg: float = 5.0,
+                      sample_rate_hz: float = 2.5e6, rx_gain_db: float = 40.0,
+                      samples: int = 65536, name: str = "bearing sweep",
+                      operator: str = "", ctx=None) -> dict:
+        """Record received power against where the antenna was pointed.
+
+        Receive-only: it transmits nothing, so it needs no arming and is safe
+        before any TX bring-up. The operator sweeps the antenna by hand while
+        this captures continuously, and each capture is stamped with the
+        heading reported by the position source.
+
+        This is the air-looking counterpart to a band survey — power against
+        *bearing* rather than against frequency — and it is what the platform
+        can show today with the antennas on the bench. It is not a PPI: there
+        is no range axis, because range needs the radio to transmit and time
+        its own echo, which this bench has never done.
+
+        It refuses to run without a heading. A sweep with no bearings is a
+        list of power readings with nothing to plot them against, and filling
+        the axis with assumed angles would be inventing the measurement.
+        """
+        dev = self.device(device_id)
+        if not dev.connected:
+            raise ValueError(f"{device_id} is not connected")
+        if self.stop_acquisition.is_set():
+            raise ValueError("acquisition is stopped after an emergency stop; "
+                             "resume before starting a sweep")
+
+        probe = self.position_source.read()
+        if probe is None or probe.heading_deg is None:
+            raise ValueError(
+                "this sweep plots power against bearing, and the active "
+                f"position source ({self.position_source.name}) is not "
+                "reporting a heading. Connect an orientation sensor that "
+                "sends heading_deg, or use a band survey if you want power "
+                "against frequency instead.")
+
+        original = DeviceConfig(**dev.config.to_dict())
+        centre = float(center_hz or original.center_frequency_hz)
+        manifest = self.store.create(
+            name=name, kind="bearing_sweep", operator=operator,
+            objective=f"receive-only bearing sweep at {centre / 1e6:.3f} MHz",
+            hardware={"device_id": device_id, "kind": dev.kind,
+                      "rf_chain": self.current_chain()},
+            rf_config={"center_frequency_hz": centre,
+                       "sample_rate_hz": sample_rate_hz,
+                       "rx_gain_db": rx_gain_db, "bin_deg": bin_deg})
+        exp_id = manifest["identity"]["experiment_id"]
+
+        points, no_heading = [], 0
+        deadline = time.time() + max(1.0, float(duration_s))
+        try:
+            with self.device_locks[device_id]:
+                dev.configure(DeviceConfig(**{
+                    **original.to_dict(),
+                    "center_frequency_hz": centre,
+                    "sample_rate_hz": sample_rate_hz,
+                    "rx_bandwidth_hz": min(sample_rate_hz,
+                                           dev.capabilities.max_bandwidth),
+                    "rx_gain_db": rx_gain_db}))
+                while time.time() < deadline:
+                    if ctx is not None:
+                        ctx.check()
+                        left = max(0.0, deadline - time.time())
+                        ctx.progress(1.0 - left / max(1.0, float(duration_s)),
+                                     f"{len(points)} captures, {left:.0f}s left")
+                    seg = dev.receive(samples)
+                    pos = self.position_source.read()
+                    point = _survey_point(centre, seg)
+                    if pos is None or pos.heading_deg is None:
+                        # Recorded, but it cannot be placed on the display.
+                        no_heading += 1
+                        point["heading_deg"] = None
+                    else:
+                        point["heading_deg"] = round(pos.heading_deg % 360.0, 2)
+                        point["heading_stale_s"] = round(pos.stale_s, 3)
+                    points.append(point)
+        finally:
+            dev.configure(original)     # always restore the operator's config
+
+        binned = bin_by_bearing(points, bin_deg=bin_deg)
+        binned["center_hz"] = centre
+        binned["captures"] = len(points)
+        binned["captures_without_heading"] = no_heading
+        if no_heading:
+            binned["note"] = (
+                f"{no_heading} of {len(points)} captures arrived with no "
+                "heading and are stored but not placed on the plot.")
+        self.store.add_derived(
+            exp_id, "bearing_sweep", binned,
+            {"stages": [{"stage": "bearing_sweep", "version": "1.0",
+                         "params": {"bin_deg": bin_deg, "center_hz": centre,
+                                    "duration_s": duration_s,
+                                    "samples": samples,
+                                    "rx_gain_db": rx_gain_db}}],
+             "fingerprint": "bearing_sweep-1.0"}, [])
+        self.store.finalize(exp_id)
+        self.safety.audit("bearing_sweep", device=device_id, experiment=exp_id,
+                          center_hz=centre, captures=len(points),
+                          coverage=binned["coverage"])
+        return {"experiment_id": exp_id, **binned}
+
+    def bearing_sweep_job(self, **kwargs):
+        """Run a bearing sweep as a cancellable background job (FR-API-003)."""
+        return self.jobs.submit(
+            "bearing_sweep", kwargs.get("name", "bearing sweep"),
+            lambda ctx: self.bearing_sweep(ctx=ctx, **kwargs),
+            params=dict(kwargs))
+
     def band_survey(self, device_id: str, start_hz: float, stop_hz: float,
                     step_hz: float = 2e6, sample_rate_hz: float = 2.5e6,
                     rx_gain_db: float = 40.0, samples: int = 65536,
@@ -2367,7 +2542,16 @@ class Runtime:
         # the other. Absent-versus-False is also the ambiguity this codebase
         # refuses elsewhere — `in_sync: None` means "not checked", not "fine".
         src.setdefault("applied_to_hardware", False)
-        src["saved_per_transport"] = bool(per_transport)
+        # Tri-state. `False` is a true statement for a device with one known
+        # way in, but asserting it for a radio registered by explicit URI —
+        # which carries no `discovery` at all, so its other transports were
+        # never looked for — claims something nothing established, while
+        # per-URI saving is exactly what is in force. "One transport" and "we
+        # did not look" are different facts, and this codebase already keeps
+        # them apart: `in_sync: None` is "not checked", not "fine".
+        info = getattr(dev, "discovery", {}) or {}
+        src["saved_per_transport"] = (
+            bool(per_transport) if "alternatives" in info else None)
         d["config_source"] = src
         # How the radio is attached, in terms an operator reads rather than a
         # libiio URI: the same board over Ethernet and over USB behaves very

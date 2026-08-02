@@ -12,7 +12,7 @@ to that document — keep citing them, it is how coverage is tracked.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn forge_vision.server.app:app --host 127.0.0.1 --port 8347
-.venv/bin/python -m pytest tests/          # 404 tests, ~4 min
+.venv/bin/python -m pytest tests/          # 425 tests, ~4 min
 .venv/bin/python tools/gen_api_docs.py     # regenerate docs/API.md after API changes
 ```
 
@@ -228,6 +228,41 @@ enumerating on a C-to-C cable. Model reports `NanoVNA-F_V2`, firmware 0.6.2,
 - Reflashing re-enumerates the board, which invalidates any open USB handle.
   The adapter keeps reporting `connected: true`; the tell is that `health`
   loses its `temperature_c` field. Disconnect and reconnect to recover.
+
+## The bench pivoted to air-looking radar on 2026-08-02
+
+Do not assume ground radar. The operator moved to **air-looking work** —
+pointing an antenna at things and reading the return against bearing — and
+the reason is physical rather than a change of mind: **the bench has no
+antenna suitable for GPR.** All three measured antennas best-match between
+912 MHz and 1.23 GHz (see the component inventory), and at those frequencies
+ground penetration is centimetres in dry soil and effectively nothing in
+moist — `soil_moist` alone is 10 dB/m before the antenna mismatch. Bowties
+are the right instrument for GPR and are not on the bench yet: broadband for
+range resolution, and resistively loadable so the antenna stops ringing
+before the return arrives.
+
+What this costs is smaller than it sounds, because the split runs below the
+imaging layer:
+
+- **Unaffected** — devices, safety, chains and component measurement,
+  experiments and provenance, the VNA work, positioning (which already
+  carries `heading_deg`), and the FMCW range profile. Dechirp-to-range is the
+  same arithmetic in air; select the `air` medium, ε_r = 1.0, and it holds.
+- **Ground-specific** — `imaging/migration.py` (downward-looking, co-located
+  TX/RX), B-scan assembly indexed by `x_m`, depth through soil permittivity,
+  site fusion, and SAGE's depth-interval language.
+
+So a PPI is a **new derived product beside `bscan`**, not a rewrite: the same
+raw captures, binned by bearing rather than by distance along a line.
+
+`bearing_sweep` is the receive-only half of that and works today. It records
+power against where the antenna was pointed, refuses to run without a
+heading — a sweep with no bearings has nothing to plot against, and assuming
+angles would invent the axis — and leaves unvisited sectors **blank rather
+than at the floor**, because an unmeasured bearing is not a null in the
+pattern. It transmits nothing, so it needs no arming. There is no range axis:
+that needs the radio to transmit and time its own echo.
 
 ## Where things stand
 

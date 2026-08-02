@@ -106,6 +106,30 @@
       <canvas id="sv-plot" width="1280" height="240"></canvas>
       <div id="sv-summary" class="mut"></div>
     </div>
+    <div class="panel">
+      <h2>Bearing sweep <span class="mut">— receive only · power against where
+        the antenna is pointed</span></h2>
+      <div class="toolbar">
+        <label>Centre (MHz) <input id="bs-freq" type="number" value="2437"
+               step="0.1"></label>
+        <label>Duration (s) <input id="bs-dur" type="number" value="60"
+               step="5" min="1"></label>
+        <label>Bin (°) <input id="bs-bin" type="number" value="5" step="1"
+               min="1" max="90"></label>
+        <label>RX gain (dB) <input id="bs-gain" type="number" value="40"
+               step="1"></label>
+        <button id="bs-run" class="primary">Start sweep</button>
+        <span id="bs-status" class="mut"></span>
+      </div>
+      <div class="grid2">
+        <canvas id="bs-plot" width="620" height="620"></canvas>
+        <div><pre id="bs-summary" class="mono"></pre></div>
+      </div>
+      <p class="mut">Sweep the antenna by hand while this runs. Sectors you
+        never point at are left blank — an unmeasured bearing is not a null.
+        This has no range axis: that needs the radio to transmit and time its
+        own echo, which this bench has not done.</p>
+    </div>
   </section>
 
   <!-- ============ RANGE LAB ============ -->

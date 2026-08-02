@@ -801,6 +801,15 @@ async def import_vna(comp_id: str, file: UploadFile):
         raise _fail(exc)
 
 
+@app.post("/api/bearing_sweep")
+def bearing_sweep(body: S.BearingSweepRequest):
+    """Power against bearing — receive only, transmits nothing (FR-POS-003)."""
+    try:
+        return runtime.bearing_sweep_job(**body.model_dump()).to_dict()
+    except Exception as exc:  # noqa: BLE001
+        raise _fail(exc)
+
+
 # -- device/hardware state reconciliation ------------------------------------
 @app.get("/api/devices/{device_id}/sync")
 def device_sync(device_id: str):

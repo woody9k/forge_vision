@@ -242,6 +242,24 @@ class AdoptLossRequest(Strict):
     freq_hz: float | None = Field(None, gt=0)
 
 
+class BearingSweepRequest(Strict):
+    """Record received power against where the antenna was pointed.
+
+    Receive-only. Needs a position source reporting `heading_deg`; without
+    one there is no axis to plot against and the sweep is refused rather than
+    assuming angles.
+    """
+    device_id: str = "sim-pluto-0"
+    center_hz: float | None = Field(None, gt=0)
+    duration_s: float = Field(60.0, ge=1.0, le=1800.0)
+    bin_deg: float = Field(5.0, gt=0.0, le=90.0)
+    sample_rate_hz: float = Field(2.5e6, gt=0)
+    rx_gain_db: float = Field(40.0, ge=0, le=80)
+    samples: int = Field(65536, ge=1024, le=1 << 20)
+    name: str = "bearing sweep"
+    operator: str = ""
+
+
 class SyncWatchdogRequest(Strict):
     """Start or stop periodic reconciliation of devices against their hardware."""
     running: bool = True
