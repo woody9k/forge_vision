@@ -253,6 +253,14 @@ same claim as agreement; say "unverified", not "fine". A capture's
 `telemetry.config_verified` says whether that segment's configuration was read
 back from the hardware rather than assumed.
 
+**An unmeasured bearing is not a null.** A `bearing_sweep` returns one bin per
+sector with `samples` and a `peak_dbfs`. A bin with `samples: 0` has
+`peak_dbfs: null` — the antenna was never pointed there. Do not read it as a
+low reading, do not interpolate across it, and quote `coverage` when
+describing the pattern. `front_to_back_db` is present only when the bearing
+opposite the strongest was actually visited; when it is absent there is a
+`front_to_back_note` saying so, and the ratio is unavailable rather than zero.
+
 **A VNA sweep is not evidence it was calibrated.** The instrument reports
 which standards are captured but never the span they cover, and it silently
 interpolates a calibration onto whatever span is swept. Every stored

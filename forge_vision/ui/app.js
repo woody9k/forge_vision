@@ -91,6 +91,7 @@ function renderDashRadios(devices) {
     <div class="devcard">
       <div class="devmain">${linkLine(d)}<br>
         <span class="mut">${settingsLine(d)}</span>
+        ${configSourceNote(d)}
         ${syncLine(d, false)}
         ${d.connected ? "" : '<br><span class="mut">not connected</span>'}
       </div>
@@ -151,6 +152,32 @@ window.resyncDevice = async (id) => {
   refreshStatus();
 };
 
+// Where the settings shown came from, and anything the platform knows about
+// them that the numbers alone do not say: a saved file it could not read, a
+// value the clamp had to move, a write that failed part-way, or settings
+// saved per transport rather than per board. All of that was reaching
+// `/api/status` and stopping there. `profile_source` has been rendered since
+// the day it was added, for the reason CLAUDE.md gives — "defaulted" and
+// "chosen" must not look alike — and this is the same claim about a device.
+function configSourceNote(d) {
+  const src = d.config_source;
+  if (!src) return "";
+  const bits = [];
+  if (src.source === "restored" || src.source === "carried") {
+    bits.push(`<span class="tag" style="background:#12241d;border:1px solid #1f4a38;
+      color:#86dfc0">settings ${esc(src.source)}${
+        src.applied_to_hardware ? " and applied to the radio" : ""}</span>`);
+  }
+  if (src.saved_per_transport === true) {
+    bits.push(`<span class="tag" style="background:#2b2410;border:1px solid #5c4c1c;
+      color:#e8c96a" title="${esc(src.note || "")}">saved per transport</span>`);
+  }
+  if (src.note) {
+    bits.push(`<div class="mut" style="margin-top:4px">${esc(src.note)}</div>`);
+  }
+  return bits.length ? "<br>" + bits.join(" ") : "";
+}
+
 function renderDeviceCards(devices) {
   if (!$("device-list")) return;
   $("device-list").innerHTML = devices.map((d) => {
@@ -168,6 +195,7 @@ function renderDeviceCards(devices) {
     <div class="devcard">
       <div class="devmain">${linkLine(d)}<br>
         <span class="mut">${settingsLine(d)}</span>
+        ${configSourceNote(d)}
         ${syncLine(d)}
         <details>
           <summary>capabilities &amp; notes</summary>
@@ -2564,6 +2592,151 @@ $("vna-calcheck").onclick = async () => {
     vnaNotice(`Calibration check failed: ${esc(String(e.message || e))}`, "bad");
   } finally {
     btn.disabled = false; btn.textContent = "Check calibration";
+  }
+};
+
+// Wait for a background job and hand back its finished record. The bearing
+// sweep is the first UI flow that needs a job's *result* — surveys block on
+// their request — because the operator is physically swinging an antenna for
+// a minute and wants to see progress while they do it. Cancellation works
+// through the existing processing-queue controls.
+async function pollJob(jobId, onProgress, intervalMs = 700) {
+  for (;;) {
+    const j = await api(`/api/jobs/${jobId}?include_result=true`);
+    if (onProgress) onProgress(j);
+    if (["succeeded", "failed", "cancelled"].includes(j.state)) return j;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+// -- bearing sweep ----------------------------------------------------------
+// A polar plot of received power against where the antenna was pointed. The
+// one rule that shapes the drawing: a sector nobody pointed at is left blank.
+// Joining across a gap would draw a null the antenna does not have, which is
+// the "unmeasured and empty are different claims" rule with a pen in its hand.
+function drawBearingPlot(sweep) {
+  const cv = $("bs-plot");
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
+  const R = Math.min(W, H) / 2 - 40;
+  ctx.clearRect(0, 0, W, H);
+  if (!sweep) return;
+
+  const measured = (sweep.bins || []).filter((b) => b.samples > 0);
+  const levels = measured.map((b) => b.peak_dbfs);
+  // Scale to the data, not to a fixed range: an antenna pattern is about
+  // relative shape, and a fixed floor flattens everything interesting.
+  const hi = levels.length ? Math.max(...levels) : 0;
+  const lo = levels.length ? Math.min(...levels) : -100;
+  const span = Math.max(10, hi - lo);
+  const radius = (db) => R * Math.max(0.05, (db - lo) / span);
+
+  ctx.strokeStyle = "#2a2f3a"; ctx.fillStyle = "#7b8496";
+  ctx.font = "11px monospace"; ctx.textAlign = "center";
+  for (let i = 1; i <= 4; i++) {
+    ctx.beginPath(); ctx.arc(cx, cy, R * i / 4, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillText(`${(lo + span * i / 4).toFixed(0)} dBFS`, cx, cy - R * i / 4 - 3);
+  }
+  for (let a = 0; a < 360; a += 30) {
+    const rad = (a - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(rad), cy + R * Math.sin(rad)); ctx.stroke();
+    ctx.fillText(`${a}°`, cx + (R + 18) * Math.cos(rad),
+                 cy + (R + 18) * Math.sin(rad) + 4);
+  }
+
+  // Draw only runs of adjacent measured bins, so gaps stay gaps.
+  ctx.strokeStyle = "#3ad6a0"; ctx.lineWidth = 2;
+  const bins = sweep.bins || [];
+  let run = [];
+  const flush = () => {
+    if (run.length > 1) {
+      ctx.beginPath();
+      run.forEach((b, i) => {
+        const rad = (b.bearing_deg - 90) * Math.PI / 180;
+        const r = radius(b.peak_dbfs);
+        const x = cx + r * Math.cos(rad), y = cy + r * Math.sin(rad);
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.stroke();
+    }
+    run.forEach((b) => {
+      const rad = (b.bearing_deg - 90) * Math.PI / 180;
+      const r = radius(b.peak_dbfs);
+      ctx.fillStyle = b.samples > 2 ? "#3ad6a0" : "#7b8496";
+      ctx.beginPath();
+      ctx.arc(cx + r * Math.cos(rad), cy + r * Math.sin(rad), 2.5, 0,
+              Math.PI * 2);
+      ctx.fill();
+    });
+    run = [];
+  };
+  for (const b of bins) { b.samples > 0 ? run.push(b) : flush(); }
+  flush();
+
+  if (sweep.strongest) {
+    const rad = (sweep.strongest.bearing_deg - 90) * Math.PI / 180;
+    ctx.strokeStyle = "#e8c96a"; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(rad), cy + R * Math.sin(rad));
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+function renderBearingSummary(s) {
+  if (!s) { $("bs-summary").textContent = ""; return; }
+  const L = [];
+  L.push(`centre        ${(s.center_hz / 1e6).toFixed(3)} MHz`);
+  L.push(`captures      ${s.captures}`);
+  L.push(`bins measured ${s.bins_measured} of ${s.bins_total}` +
+         `  (${(s.coverage * 100).toFixed(0)}% of the circle)`);
+  if (s.strongest) {
+    L.push(`strongest     ${s.strongest.peak_dbfs} dBFS at ` +
+           `${s.strongest.bearing_deg}°  (${s.strongest.samples} captures)`);
+  }
+  if (s.front_to_back_db !== undefined) {
+    L.push(`front/back    ${s.front_to_back_db} dB`);
+  } else if (s.front_to_back_note) {
+    L.push(`front/back    unavailable — ${s.front_to_back_note}`);
+  }
+  if (s.captures_without_heading) {
+    L.push(`no heading    ${s.captures_without_heading} capture(s) stored but `
+           + `not plotted`);
+  }
+  if (s.bins_measured < s.bins_total) {
+    L.push("");
+    L.push(`${s.bins_total - s.bins_measured} bearing(s) were never pointed `
+           + "at. Those sectors are blank, not zero.");
+  }
+  $("bs-summary").textContent = L.join("\n");
+}
+
+$("bs-run").onclick = async () => {
+  const body = {
+    device_id: $("live-device").value,
+    center_hz: Number($("bs-freq").value) * 1e6,
+    duration_s: Number($("bs-dur").value),
+    bin_deg: Number($("bs-bin").value),
+    rx_gain_db: Number($("bs-gain").value),
+  };
+  const btn = $("bs-run");
+  btn.disabled = true;
+  $("bs-status").textContent = "starting…";
+  try {
+    const job = await api("/api/bearing_sweep", { method: "POST", body });
+    $("bs-status").textContent = "sweep the antenna now…";
+    const done = await pollJob(job.job_id, (j) =>
+      ($("bs-status").textContent = j.message || j.state));
+    const sweep = (done.result && done.result) || null;
+    drawBearingPlot(sweep);
+    renderBearingSummary(sweep);
+    $("bs-status").textContent = sweep
+      ? `done — ${sweep.captures} captures` : (done.error || done.state);
+  } catch (e) {
+    $("bs-status").textContent = "refused: " + String(e.message || e);
+  } finally {
+    btn.disabled = false;
   }
 };
 

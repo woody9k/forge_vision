@@ -243,14 +243,50 @@ def test_the_per_transport_note_describes_what_actually_happens(tmp_path):
     assert eth2.pushed_to_hardware["center_frequency_hz"] == 2437e6, (
         "the post-switch change is stranded — this is the real failure")
 
-    note = [d for d in back2.status()["devices"]
+    # C: nobody switches anything — discovery simply comes up on a transport
+    # that has no saved entry, e.g. the LAN was down at boot. This is the
+    # clause that motivated the rewrite, and asserting only that the sentence
+    # mentions it would pass for a sentence claiming the opposite.
+    rt3 = restart(tmp_path)
+    rt3._register(_serial_less("pluto-ip:192.168.99.222"))
+    rt3.configure("pluto-ip:192.168.99.222", {"center_frequency_hz": 2437e6})
+
+    back3 = restart(tmp_path)
+    gadget = _serial_less("pluto-ip:192.168.2.1")
+    back3._register(gadget)
+    assert gadget.pushed_to_hardware["center_frequency_hz"] == (
+        DeviceConfig().center_frequency_hz), (
+        "a transport with no entry of its own comes up on defaults, with "
+        "no operator action involved")
+    src = [d for d in back3.status()["devices"]
+           if d["device_id"] == "pluto-ip:192.168.2.1"][0]["config_source"]
+    assert src["source"] == "default"
+    assert src["saved_per_transport"] is True
+
+
+def test_a_three_transport_board_is_not_described_as_a_pair(tmp_path):
+    """`usb:`, the USB-gadget address and the LAN address are all one board,
+    so "the other one" named neither of the two it could have landed on."""
+    rt = restart(tmp_path)
+    dev = _serial_less("pluto-ip:192.168.99.222",
+                       uris=("usb:", "ip:192.168.2.1", "ip:192.168.99.222"))
+    rt._register(dev)
+    note = [d for d in rt.status()["devices"]
             if d["device_id"] == "pluto-ip:192.168.99.222"
             ][0]["config_source"]["note"]
-    # the note must describe *this* case: a change made after switching
-    assert "changed after switching" in note
-    # and must not blame the operator's button alone, since discovery can
-    # move transports on any boot without anyone touching it
-    assert "discovery picked differently" in note
+    assert "a different one" in note
+    assert "the other one" not in note
+
+
+def test_saved_per_transport_is_unknown_when_nothing_was_surveyed(tmp_path):
+    """A radio registered by explicit URI carries no `discovery`, so its other
+    transports were never looked for. `False` would claim they do not exist."""
+    rt = restart(tmp_path)
+    rt._register(PreConnectedRadio("pluto-ip:hand-added"))   # no discovery
+    src = [d for d in rt.status()["devices"]
+           if d["device_id"] == "pluto-ip:hand-added"][0]["config_source"]
+    assert src["saved_per_transport"] is None, (
+        "'one transport' and 'we did not look' are different facts")
 
 
 def test_config_source_has_the_same_keys_for_every_device(tmp_path):
