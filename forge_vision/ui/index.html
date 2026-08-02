@@ -80,10 +80,11 @@
     <div class="toolbar" id="live-config">
       <label>Center (MHz) <input id="cfg-freq" type="number" value="915" step="1"></label>
       <label>Rate (MSPS) <input id="cfg-rate" type="number" value="61.44" step="0.01"></label>
-      <label>RX BW (MHz) <input id="cfg-bw" type="number" value="56" step="1"></label>
+      <label>RX BW (MHz) <input id="cfg-bw" type="number" value="56" step="0.01"></label>
       <label>RX gain (dB) <input id="cfg-rxgain" type="number" value="40" step="1"></label>
       <label>TX gain (dB) <input id="cfg-txgain" type="number" value="-30" step="1"></label>
       <button id="cfg-apply">Apply config</button>
+      <span id="cfg-drift"></span>
     </div>
     <div id="live-alerts"></div>
     <div class="grid2">

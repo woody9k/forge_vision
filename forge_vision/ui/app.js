@@ -206,7 +206,40 @@ async function refreshStatus() {
   refreshChain();
   refreshRxProtection();
   refreshPositionUi();
+  syncServerMirroredFields();
 }
+
+// Fields whose value belongs to the server rather than to this page. They
+// were write-only: read on submit, never populated, so they showed their HTML
+// default no matter what the platform actually held. `atten-db` is the one
+// that matters — it feeds the receive-protection estimate, and a form stuck
+// at 0 invites re-submitting 0 over a real declared value.
+const mirroredLastSynced = {};
+
+function syncServerMirroredFields() {
+  const set = (id, value) => {
+    const el = $(id);
+    if (!el || value === undefined || value === null) return;
+    // Never fight a keystroke, and never fight an edit that has lost focus
+    // but not yet been submitted. `activeElement` alone is not enough: focus
+    // moves to the Declare button on mousedown, so a poll landing between
+    // mousedown and click would revert the field and submit the old value —
+    // and path attenuation is a safety declaration, not a preference.
+    const dirty = mirroredLastSynced[id] !== undefined
+      && String(el.value) !== String(mirroredLastSynced[id]);
+    if (document.activeElement === el || dirty) return;
+    el.value = value;
+    mirroredLastSynced[id] = String(value);
+  };
+  if (STATUS && STATUS.safety) set("atten-db", STATUS.safety.path_attenuation_db);
+  if (!configFormLoaded && $("live-device") && $("live-device").value) {
+    configFormLoaded = true;
+    syncDeviceConfigInputs($("live-device").value);
+  } else {
+    renderConfigDrift();
+  }
+}
+let configFormLoaded = false;
 
 // The frequency profile persists across restarts. When it could *not* be
 // restored the platform falls back to the built-in default, and that has to
@@ -251,13 +284,29 @@ function renderDashboard() {
     </div>`).join("") || '<span class="mut">none yet</span>';
 }
 
+// Which radio a fresh page should be pointed at. `sim-pluto-0` is registered
+// first, so with no selection to preserve the browser picked the *simulator*
+// on every page load — including with a real radio connected. An operator
+// would then read the config panel, adjust a gain and press Apply, having
+// configured the simulator while the radio they were working with sat
+// untouched, and the Dashboard (which shows the real one) disagreed with the
+// Live RF form for reasons nothing on screen explained.
+function preferredDevice(devices) {
+  const real = devices.filter((d) => d.kind !== "simulated_pluto_plus");
+  return (real.find((d) => d.connected) || real[0]
+          || devices.find((d) => d.connected) || devices[0] || {}).device_id;
+}
+
 function fillSelectors() {
   const devs = STATUS.devices.map((d) => d.device_id);
+  const preferred = preferredDevice(STATUS.devices);
   for (const id of ["live-device", "range-device", "scan-device"]) {
     const sel = $(id);
     const cur = sel.value;
     sel.innerHTML = devs.map((d) => `<option>${esc(d)}</option>`).join("");
-    if (devs.includes(cur)) sel.value = cur;
+    // Preserve a deliberate choice; otherwise prefer a real radio over the
+    // simulator rather than whichever happens to be registered first.
+    sel.value = devs.includes(cur) ? cur : (preferred || devs[0]);
   }
   // waveform lists are per-device: a stock AD9363 Pluto (20 MHz) cannot
   // transmit the 56 MHz sweeps, so never offer them for that radio
@@ -730,13 +779,22 @@ document.addEventListener("click", (ev) => {
 });
 
 $("atten-save").onclick = async () => {
+  const declared = parseFloat($("atten-db").value) || 0;
   await api("/api/safety/path_attenuation", { method: "POST",
-    body: { attenuation_db: parseFloat($("atten-db").value) || 0 } });
-  refreshRxProtection();
+    body: { attenuation_db: declared } });
+  // The edit is now the server's value, so it is no longer a pending edit;
+  // clearing this lets the poll resume tracking the field.
+  mirroredLastSynced["atten-db"] = String(declared);
+  refreshStatus();
 };
 
 async function refreshRxProtection() {
-  const dev = STATUS && STATUS.devices.length ? STATUS.devices[0].device_id : "";
+  // Not devices[0] — that is always sim-pluto-0, registered first. This panel
+  // was computing "estimated X dBm at the receive port" from the simulator's
+  // gains while naming no device, so setting a real radio's TX gain changed
+  // nothing here. Same hazard the device selectors were just fixed for, and
+  // under-warning about the radio actually in use is the worse direction.
+  const dev = (STATUS && preferredDevice(STATUS.devices)) || "";
   if (!dev) return;
   let c;
   try { c = await api(`/api/safety/rx_protection?device_id=${encodeURIComponent(dev)}`); }
@@ -763,10 +821,14 @@ async function refreshRxProtection() {
     ? (c.severity === "critical" ? "Receiver at risk — TX is live"
                                  : "Receive path warning — TX is live")
     : "Before you transmit";
+  // Name the radio. The figures come from one device's configuration and the
+  // bench has more than one, so an unattributed "this configuration" invites
+  // reading a simulator's numbers as the bench's.
   const lead = imminent
-    ? `estimated ${c.rx_input_dbm} dBm at the port.`
-    : `this configuration would put an estimated ${c.rx_input_dbm} dBm at the
-       receive port. Nothing is transmitting, so nothing is at risk yet.`;
+    ? `estimated ${c.rx_input_dbm} dBm at the port of <code>${esc(dev)}</code>.`
+    : `<code>${esc(dev)}</code>'s configuration would put an estimated
+       ${c.rx_input_dbm} dBm at the receive port. Nothing is transmitting, so
+       nothing is at risk yet.`;
   $("rx-protection").innerHTML =
     `<div class="alert ${cls}"><b>${esc(head)}</b> — ${lead}<br>
      ${c.warnings.map(esc).join("<br>")}
@@ -831,18 +893,58 @@ let waterfallRows = [];
 // Show what the radio is actually set to, not what the boxes were last left
 // at. These are editable, so they are only synced on connect and on selecting
 // a device — never per frame, which would fight the operator mid-keystroke.
-async function syncDeviceConfigInputs(id) {
-  let st;
-  try { st = await api("/api/status"); } catch (e) { return; }
-  const d = (st.devices || []).find((x) => x.device_id === id);
-  if (!d || !d.config) return;
-  const c = d.config;
-  $("cfg-freq").value = (c.center_frequency_hz / 1e6).toFixed(3).replace(/\.?0+$/, "");
-  $("cfg-rate").value = (c.sample_rate_hz / 1e6).toFixed(2);
-  $("cfg-bw").value = (c.rx_bandwidth_hz / 1e6).toFixed(0);
-  $("cfg-rxgain").value = c.rx_gain_db;
-  $("cfg-txgain").value = c.tx_gain_db;
+// A field that mirrors server state has to be *loaded* from it, not only
+// written back to it. These were populated from hardcoded values in the HTML
+// and refreshed only on connect, device-change and apply — never on page
+// load. So a refresh showed 61.44 MSPS and 56 MHz against a radio running
+// 30.72/30.72, and pressing "Apply config" without touching anything would
+// have pushed those defaults onto the radio. One place defines the mapping
+// now, so a new field cannot be added to the form and forgotten here.
+const CFG_FIELDS = [
+  ["cfg-freq", (c) => (c.center_frequency_hz / 1e6).toFixed(3).replace(/\.?0+$/, "")],
+  ["cfg-rate", (c) => (c.sample_rate_hz / 1e6).toFixed(2)],
+  // Not toFixed(0): a radio at 30.72 MHz rendered as "31", and pressing
+  // Apply without touching anything then pushed 31 MHz onto it. A field that
+  // cannot represent the value it was loaded with corrupts it on round trip.
+  ["cfg-bw", (c) => (c.rx_bandwidth_hz / 1e6).toFixed(2).replace(/\.?0+$/, "")],
+  ["cfg-rxgain", (c) => String(c.rx_gain_db)],
+  ["cfg-txgain", (c) => String(c.tx_gain_db)],
+];
+
+function deviceFromStatus(id) {
+  return ((STATUS && STATUS.devices) || []).find((x) => x.device_id === id);
 }
+
+async function syncDeviceConfigInputs(id) {
+  let d = deviceFromStatus(id);
+  if (!d) {
+    try { d = ((await api("/api/status")).devices || []).find((x) => x.device_id === id); }
+    catch (e) { return; }
+  }
+  if (!d || !d.config) return;
+  for (const [field, read] of CFG_FIELDS) $(field).value = read(d.config);
+  renderConfigDrift(id);
+}
+
+// Loading on boot fixes the stale form, but it cannot stop the radio moving
+// afterwards — another page, a bench script, or the operator part-way through
+// an edit. Rather than overwrite what someone is typing on a 5 s poll, say
+// when the form and the radio disagree and offer to reload. Silent
+// disagreement between two views of the same radio is the actual complaint.
+function renderConfigDrift(id) {
+  const el = $("cfg-drift");
+  if (!el) return;
+  const d = deviceFromStatus(id || ($("live-device") || {}).value);
+  if (!d || !d.config) { el.innerHTML = ""; return; }
+  const differs = CFG_FIELDS.filter(([f, read]) => $(f).value !== read(d.config));
+  if (!differs.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<span class="tag" style="background:#2b2410;border:1px solid #5c4c1c;
+    color:#e8c96a">form differs from the radio: ${
+      differs.map(([f]) => esc(f.replace("cfg-", ""))).join(", ")}</span>
+    <button onclick="reloadConfigForm()">Load from radio</button>`;
+}
+
+window.reloadConfigForm = () => syncDeviceConfigInputs($("live-device").value);
 
 $("live-connect").onclick = async () => {
   const id = $("live-device").value;

@@ -302,9 +302,12 @@ produced a longer list; these are the parts that survived verification:
    reprocessed or independently checked, which is rule 4 unmet in spirit. Save
    each step as a segment, create the experiment before the sweep, and
    finalize as partial on cancellation.
-2. **Persistent calibration.** The frequency profile half of this was done on
-   2026-08-01 (`safety_state.json`, see Gotchas) — `runtime.calibration`
-   remains an in-memory dict that is simply lost on restart, and which also
+2. **Persistent calibration and device configuration.** The frequency profile
+   half of this was done on 2026-08-01 (`safety_state.json`, see Gotchas).
+   Still outstanding: **device configuration**, which resets to
+   `DeviceConfig()` defaults on every start and is pushed at the radio by
+   `connect()`, so a restart silently retunes the bench; and
+   `runtime.calibration`, an in-memory dict that is simply lost, and which also
    needs to record what it was taken with (waveform, gains, chain, frequency
    span) and refuse to apply against an incompatible configuration, the same
    way chain configurations already do.
@@ -420,6 +423,14 @@ because the hardware never moves. Wire those through `_apply()` and
 
 ## Gotchas
 
+- **Device configuration does not persist across a restart.** `DeviceConfig()`
+  is constructed fresh for every registration, so centre frequency, sample
+  rate and both gains return to their defaults (915 MHz, 61.44 MSPS clamped to
+  the device, RX 40 dB, TX −30 dB) every time the service starts, and
+  `connect()` pushes them at the radio. An operator who sets RX gain and then
+  sees it back at 40 after a restart is not imagining it. Same class as the
+  frequency profile, which is now fixed; this one is not, and it is worth
+  doing next because a restart currently retunes a bench mid-experiment.
 - **The active frequency profile persists; path attenuation and arming do
   not, deliberately.** The profile is stored in `safety_state.json` in the
   data dir and restored at startup. It did not used to be: `SafetyLimits()`

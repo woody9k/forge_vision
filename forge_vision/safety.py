@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import threading
 import time
@@ -65,14 +66,44 @@ def rx_protection_check(tx_gain_db: float, rx_gain_db: float,
             "capture will not be trustworthy.")
     if after_gain_dbm >= RX_FULL_SCALE_DBM and severity != "critical":
         severity = "warn" if severity == "ok" else severity
-        warnings.append(
-            f"Receive gain of {rx_gain_db:.0f} dB puts the signal "
-            f"{after_gain_dbm - RX_FULL_SCALE_DBM:.0f} dB past ADC full "
-            "scale; expect clipping. Reduce RX gain.")
+        over = after_gain_dbm - RX_FULL_SCALE_DBM
+        if rx_input_dbm >= RX_FULL_SCALE_DBM:
+            # Reducing RX gain cannot help: the signal arriving at the port is
+            # already past full scale before any gain is applied. Telling the
+            # operator to turn the gain down here sends them to 0 dB, watching
+            # the warning refuse to clear, with nothing explaining why.
+            past = rx_input_dbm - RX_FULL_SCALE_DBM
+            # Mirror of the `ceil() - 1` below. Quoting `past` itself lands
+            # the operator *on* full scale, which the `>=` test still trips —
+            # so following the advice exactly reproduced this very warning,
+            # and at `past` below 1 dB it read "add at least 0 dB".
+            needed = math.floor(past) + 1
+            warnings.append(
+                f"Estimated {rx_input_dbm:.1f} dBm arriving at the receive "
+                f"port is {past:.1f} dB past ADC full scale before any "
+                "receive gain. Reducing RX gain cannot fix this — even at "
+                f"0 dB it would still clip. This needs at least "
+                f"{needed:.0f} dB more isolation or attenuation between "
+                "transmit and receive.")
+        else:
+            # The saturation test is `>=`, so the gain that lands *exactly* on
+            # full scale still trips it. Quote the largest whole dB strictly
+            # below, or the advice reproduces the very defect above: an
+            # operator who follows it precisely still sees the warning.
+            max_gain = math.ceil(RX_FULL_SCALE_DBM - rx_input_dbm) - 1
+            warnings.append(
+                f"Receive gain of {rx_gain_db:.0f} dB puts the signal "
+                f"{over:.0f} dB past ADC full scale; expect clipping. Reduce "
+                f"RX gain to {max_gain:.0f} dB or below.")
     if path_attenuation_db <= 0:
         warnings.append(
-            "No path attenuation is declared. If transmit is cabled straight "
-            "to receive, this will damage the receiver.")
+            "No path attenuation is declared, so this estimate assumes "
+            "transmit is cabled straight into receive with nothing "
+            "between them — the worst case, and the number above rests on it. "
+            "If the ports are on separate antennas the real isolation is far "
+            "higher and these figures are pessimistic; declare it under "
+            "Hardware so the estimate describes your bench. If transmit "
+            "really is cabled to receive, this will damage the receiver.")
         severity = "critical" if severity != "critical" else severity
 
     return {
