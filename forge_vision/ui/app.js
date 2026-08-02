@@ -962,7 +962,7 @@ $("live-connect").onclick = async () => {
 $("cfg-apply").onclick = async () => {
   const id = $("live-device").value;
   try {
-    await api(`/api/devices/${id}/configure`, { method: "POST", body: {
+    const r = await api(`/api/devices/${id}/configure`, { method: "POST", body: {
       center_frequency_hz: parseFloat($("cfg-freq").value) * 1e6,
       sample_rate_hz: parseFloat($("cfg-rate").value) * 1e6,
       rx_bandwidth_hz: parseFloat($("cfg-bw").value) * 1e6,
@@ -970,7 +970,13 @@ $("cfg-apply").onclick = async () => {
       tx_gain_db: parseFloat($("cfg-txgain").value),
     }});
     await syncDeviceConfigInputs(id);
-    $("live-status").textContent = "config applied";
+    // The runtime reports a save that failed while the change still applied.
+    // Printing "config applied" over it would hide exactly the kind of
+    // problem this page was just fixed for.
+    $("live-status").textContent = r && r.config_not_saved
+      ? "applied, but NOT saved — " + r.config_not_saved
+      : "config applied";
+    refreshStatus();
   } catch (e) { $("live-status").textContent = "rejected: " + e.message; }
 };
 

@@ -19,7 +19,8 @@ import os
 
 import pytest
 
-from forge_vision.devices.base import DeviceConfig
+from forge_vision.devices.base import ConfigurationError, DeviceConfig
+from forge_vision.devices.simulated import SimulatedPluto
 from forge_vision.server.runtime import Runtime
 
 SIM = "sim-pluto-0"
@@ -75,6 +76,83 @@ def test_every_configured_field_is_restored(tmp_path):
         assert got[k] == v, k
 
 
+# -- the restore must reach the hardware, not just the cache -----------------
+
+class PreConnectedRadio(SimulatedPluto):
+    """A radio that is already connected when the runtime registers it.
+
+    This is the real hardware order: `PlutoDevice.discover()` calls
+    `connect()` — which pushes `DeviceConfig()` defaults through `_apply()` —
+    and only then hands the device to `Runtime._register()`. Every test that
+    registers a disconnected simulator exercises the opposite order and
+    cannot see the defect this class exists to catch.
+    """
+
+    def __init__(self, device_id="pre-connected"):
+        super().__init__(device_id)
+        self.pushed_to_hardware = None
+        self.connect()
+
+    def connect(self):
+        super().connect()
+        self._apply_to_hardware()
+
+    def configure(self, cfg):
+        super().configure(cfg)
+        if self.connected:
+            self._apply_to_hardware()
+
+    def _apply_to_hardware(self):
+        self.pushed_to_hardware = self.config.to_dict()
+
+
+def test_a_config_restored_onto_a_connected_radio_reaches_the_hardware(tmp_path):
+    """Assigning dev.config would leave the radio on defaults while the API
+    reported the restored values — asserting a configuration it never had."""
+    rt = restart(tmp_path)
+    rt._register(PreConnectedRadio())
+    rt.configure("pre-connected", {"center_frequency_hz": 2437e6,
+                                   "rx_gain_db": 12.0})
+
+    again = restart(tmp_path)
+    dev = PreConnectedRadio()
+    again._register(dev)
+    assert dev.pushed_to_hardware["center_frequency_hz"] == 2437e6
+    assert dev.pushed_to_hardware["rx_gain_db"] == 12.0
+
+
+def test_what_the_api_reports_matches_what_the_hardware_was_given(tmp_path):
+    rt = restart(tmp_path)
+    rt._register(PreConnectedRadio())
+    rt.configure("pre-connected", {"center_frequency_hz": 2437e6})
+
+    again = restart(tmp_path)
+    dev = PreConnectedRadio()
+    again._register(dev)
+    described = [d for d in again.status()["devices"]
+                 if d["device_id"] == "pre-connected"][0]
+    assert (described["config"]["center_frequency_hz"]
+            == dev.pushed_to_hardware["center_frequency_hz"])
+    assert described["config_source"]["applied_to_hardware"] is True
+
+
+def test_a_device_the_hardware_refuses_is_not_reported_as_restored(tmp_path):
+    rt = restart(tmp_path)
+    rt._register(PreConnectedRadio())
+    rt.configure("pre-connected", {"rx_gain_db": 12.0})
+
+    again = restart(tmp_path)
+
+    class Refuses(PreConnectedRadio):
+        def configure(self, cfg):
+            raise ConfigurationError("driver said no")
+
+    again._register(Refuses())
+    src = again.device_config_restore["pre-connected"]
+    assert src["source"] == "default"
+    assert "refused by the device" in src["note"]
+
+
 # -- restoring must not smuggle anything past the interlock ------------------
 
 def test_a_restored_config_does_not_arm_anything(tmp_path):
@@ -117,6 +195,69 @@ def test_clamping_is_reported_not_silent(tmp_path):
 
 
 # -- failure paths -----------------------------------------------------------
+
+def test_gain_clamps_are_reported_not_silent(tmp_path):
+    """Every other field reported what the clamp moved; gains did not — and a
+    transmit gain clamps *upward*, toward more power."""
+    rt = restart(tmp_path)
+    rt.configure(SIM, {"rx_gain_db": 30.0})
+    with open(rt._device_config_path, encoding="utf-8") as f:
+        saved = json.load(f)
+    saved[SIM]["rx_gain_db"] = 9999.0
+    saved[SIM]["tx_gain_db"] = -9999.0
+    with open(rt._device_config_path, "w", encoding="utf-8") as f:
+        json.dump(saved, f)
+
+    again = restart(tmp_path)
+    note = again.device_config_restore[SIM]["note"] or ""
+    assert "rx gain" in note and "tx gain" in note
+
+
+def test_a_corrupt_file_is_distinguishable_from_a_fresh_bench(tmp_path):
+    """Both fall back to defaults; only one of them lost something."""
+    fresh = restart(tmp_path)
+    fresh_src = [d for d in fresh.status()["devices"]
+                 if d["device_id"] == SIM][0]["config_source"]
+
+    fresh.configure(SIM, {"rx_gain_db": 12.0})
+    with open(fresh._device_config_path, "w", encoding="utf-8") as f:
+        f.write("{ not json")
+    broken = restart(tmp_path)
+    broken_src = [d for d in broken.status()["devices"]
+                  if d["device_id"] == SIM][0]["config_source"]
+
+    assert fresh_src["note"] is None
+    assert broken_src["note"] and "could not be read" in broken_src["note"]
+
+
+def test_a_failed_save_does_not_leak_into_a_later_successful_one(tmp_path,
+                                                                monkeypatch):
+    """Memory and disk must not diverge, or a later save on another device
+    persists the entry the operator was told had not been saved."""
+    rt = restart(tmp_path)
+    rt._register(type(rt.device(SIM))("sim-pluto-1"))
+    rt.configure(SIM, {"rx_gain_db": 5.0})            # succeeds
+
+    monkeypatch.setattr(os, "replace",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+    rt.configure(SIM, {"rx_gain_db": 33.0})           # fails to save
+    monkeypatch.undo()
+    rt.configure("sim-pluto-1", {"rx_gain_db": 7.0})  # succeeds
+
+    again = restart(tmp_path)
+    assert again.device(SIM).config.rx_gain_db == 5.0, (
+        "the unsaved 33 dB must not have been smuggled onto disk")
+
+
+def test_the_save_failure_message_names_what_it_would_revert_to(tmp_path,
+                                                               monkeypatch):
+    rt = restart(tmp_path)
+    rt.configure(SIM, {"rx_gain_db": 5.0})            # a good save exists
+    monkeypatch.setattr(os, "replace",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")))
+    out = rt.configure(SIM, {"rx_gain_db": 33.0})
+    assert "last configuration that saved successfully" in out["config_not_saved"]
+
 
 def test_an_unreadable_file_falls_back_to_defaults_and_audits(tmp_path):
     rt = restart(tmp_path)

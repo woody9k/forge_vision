@@ -210,9 +210,22 @@ class DeviceAdapter(abc.ABC):
         cfg.rx_bandwidth_hz = fit(cfg.rx_bandwidth_hz, 0,
                                   min(caps.max_bandwidth, cfg.sample_rate_hz),
                                   "rx bandwidth")
-        cfg.rx_gain_db = min(max(cfg.rx_gain_db, 0.0), caps.max_rx_gain_db)
-        cfg.tx_gain_db = min(max(cfg.tx_gain_db, caps.min_tx_gain_db),
-                             caps.max_tx_gain_db)
+        # Gains were clamped silently while every other field reported what it
+        # had to move. That is the wrong way round: a transmit gain clamps
+        # *upward* toward more power when a saved or requested value is below
+        # the part's floor, and moving it without saying so is precisely the
+        # kind of quiet change rule 3 exists to prevent.
+        def fit_db(value, lo, hi, label):
+            new = min(max(value, lo), hi)
+            if new != value:
+                notes.append(f"{label} {value:.4g} dB -> {new:.4g} dB "
+                             "(device limit)")
+            return new
+
+        cfg.rx_gain_db = fit_db(cfg.rx_gain_db, 0.0, caps.max_rx_gain_db,
+                                "rx gain")
+        cfg.tx_gain_db = fit_db(cfg.tx_gain_db, caps.min_tx_gain_db,
+                                caps.max_tx_gain_db, "tx gain")
         return cfg, notes
 
     # -- state reconciliation (FR-DEV-002/007) -----------------------------
