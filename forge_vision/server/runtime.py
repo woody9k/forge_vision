@@ -421,7 +421,10 @@ class Runtime:
         with self.device_locks[device_id]:
             status = dev.adopt_hardware_state()
         status["device_id"] = device_id
-        self._sync_records[device_id] = status
+        # Same identity check as the watchdog: narrower here (operator-driven,
+        # and it held the lock) but the same shape of mistake if it happened.
+        if self.devices.get(device_id) is dev:
+            self._sync_records[device_id] = status
         self.safety.audit("device_resynced", device=device_id,
                           adopted=status.get("adopted"),
                           unresolved=[d["field"] for d in status["drift"]])
@@ -897,10 +900,23 @@ class Runtime:
         alts = info.get("alternatives") or []
         if info.get("identified_by") == "serial" or len(alts) < 2:
             return ""
+        # Precise about *when*, because the obvious phrasing is wrong twice
+        # over. Settings do carry across a switch on their own — the carry
+        # path saves under the new id — so "switching and restarting will not
+        # carry them" is false for the ordinary switch-and-restart. And the
+        # trigger is not always an operator action: discovery picks a
+        # transport on every boot, so a LAN that is down at start time moves
+        # the radio without anyone touching the button. Naming only the button
+        # would let an operator who never touches it read this as not applying
+        # to them, which is the more dangerous of the two errors.
         return ("This radio reports no serial number, so its settings are "
-                "saved per transport rather than per board: switching "
-                "transport and restarting will not carry them across. Pin an "
-                "explicit URI if you need that.")
+                "saved per transport rather than per board. Anything changed "
+                "after switching transport is saved only under that "
+                "transport; if the platform later comes up on the other one — "
+                "because you switched back, or because discovery picked "
+                "differently — it restores that transport's own last-saved "
+                "settings, or its defaults if it has none. Pin an explicit "
+                "URI to avoid this.")
 
     def _save_device_config(self, dev) -> None:
         """Record the operator's configuration so a restart does not undo it."""
@@ -2345,7 +2361,13 @@ class Runtime:
         if per_transport:
             src["note"] = " ".join(x for x in (src.get("note"),
                                                per_transport) if x)
-            src["saved_per_transport"] = True
+        # Every shape carries every key. One `/api/status` used to return four
+        # keys for a discovered radio and two for the simulator, so a consumer
+        # indexing `applied_to_hardware` worked on one device and raised on
+        # the other. Absent-versus-False is also the ambiguity this codebase
+        # refuses elsewhere — `in_sync: None` means "not checked", not "fine".
+        src.setdefault("applied_to_hardware", False)
+        src["saved_per_transport"] = bool(per_transport)
         d["config_source"] = src
         # How the radio is attached, in terms an operator reads rather than a
         # libiio URI: the same board over Ethernet and over USB behaves very

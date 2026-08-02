@@ -196,10 +196,74 @@ def test_a_serial_less_board_is_told_its_settings_are_per_transport(tmp_path):
 
     described = [d for d in rt.status()["devices"]
                  if d["device_id"] == "pluto-ip:192.168.99.222"][0]
-    src = described["config_source"]
-    assert src.get("saved_per_transport") is True
-    assert "no serial number" in src["note"]
-    assert "will not carry them across" in src["note"]
+    assert described["config_source"]["saved_per_transport"] is True
+    assert "no serial number" in described["config_source"]["note"]
+
+
+def _serial_less(device_id, uris=("usb:", "ip:192.168.99.222")):
+    dev = PreConnectedRadio(device_id)
+    dev.discovery = {"identified_by": "attributes",
+                     "alternatives": [{"uri": u} for u in uris]}
+    return dev
+
+
+def test_the_per_transport_note_describes_what_actually_happens(tmp_path):
+    """Assert the claim, not the sentence.
+
+    The previous version checked that the note *contained* "will not carry
+    them across" — which locked in wording that was false: a switch on its
+    own does carry, because the carry path saves under the new id. A test
+    that matches substrings will happily pin an inaccurate claim in place.
+    So drive the three cases and check the note matches each outcome.
+    """
+    # A: switch, change nothing, restart on the other transport -> carries
+    rt = restart(tmp_path)
+    rt._register(_serial_less("pluto-ip:192.168.99.222"))
+    rt.configure("pluto-ip:192.168.99.222", {"center_frequency_hz": 2437e6})
+    rt._register(_serial_less("pluto-usb:"),
+                 carry_config=rt.device("pluto-ip:192.168.99.222").config)
+
+    back = restart(tmp_path)
+    eth = _serial_less("pluto-ip:192.168.99.222")
+    back._register(eth)
+    assert eth.pushed_to_hardware["center_frequency_hz"] == 2437e6, (
+        "a switch with no later change does carry — the note must not deny it")
+
+    # B: change *after* switching -> that change is stranded on that transport
+    rt2 = restart(tmp_path)
+    rt2._register(_serial_less("pluto-ip:192.168.99.222"))
+    rt2.configure("pluto-ip:192.168.99.222", {"center_frequency_hz": 2437e6})
+    rt2._register(_serial_less("pluto-usb:"),
+                  carry_config=rt2.device("pluto-ip:192.168.99.222").config)
+    rt2.configure("pluto-usb:", {"center_frequency_hz": 2450e6})
+
+    back2 = restart(tmp_path)
+    eth2 = _serial_less("pluto-ip:192.168.99.222")
+    back2._register(eth2)
+    assert eth2.pushed_to_hardware["center_frequency_hz"] == 2437e6, (
+        "the post-switch change is stranded — this is the real failure")
+
+    note = [d for d in back2.status()["devices"]
+            if d["device_id"] == "pluto-ip:192.168.99.222"
+            ][0]["config_source"]["note"]
+    # the note must describe *this* case: a change made after switching
+    assert "changed after switching" in note
+    # and must not blame the operator's button alone, since discovery can
+    # move transports on any boot without anyone touching it
+    assert "discovery picked differently" in note
+
+
+def test_config_source_has_the_same_keys_for_every_device(tmp_path):
+    """One /api/status returned four keys for a discovered radio and two for
+    the simulator, so a consumer indexing `applied_to_hardware` raised on one
+    and worked on the other."""
+    rt = restart(tmp_path)
+    rt._register(_serial_less("pluto-ip:192.168.99.222"))
+    shapes = {frozenset(d["config_source"])
+              for d in rt.status()["devices"]}
+    assert len(shapes) == 1, f"config_source shapes differ: {shapes}"
+    assert {"source", "note", "applied_to_hardware",
+            "saved_per_transport"} <= set(next(iter(shapes)))
 
 
 def test_a_serial_identified_board_is_not_warned(tmp_path):
