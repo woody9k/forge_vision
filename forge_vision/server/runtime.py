@@ -388,6 +388,14 @@ class Runtime:
 
         status["device_id"] = device_id
         previous = self._sync_records.get(device_id)
+        # `forget_device` takes no lock, so it can drop this device during the
+        # ~4 ms read above. Writing unconditionally then resurrected a record
+        # for a device that no longer exists — and re-registering that id (a
+        # transport switch back does exactly this) served `in_sync: true` for
+        # a device nothing had checked, which inverts the rule that a missing
+        # record must read as "not checked".
+        if device_id not in self.devices:
+            return {**status, "stale": "device was forgotten during the check"}
         self._sync_records[device_id] = status
 
         was = previous.get("in_sync") if previous else None
@@ -746,17 +754,40 @@ class Runtime:
                 # radio instead — this is what `resync_device` already does,
                 # and a read-back measures ~4 ms.
                 recovered, adopt_note = False, ""
-                try:
-                    actual = dev.read_hardware_config()
-                except Exception:  # noqa: BLE001
-                    actual = None
-                if actual:
-                    for field in before.to_dict():
-                        if field in actual:
-                            setattr(before, field, actual[field])
-                    recovered = True
                 dev.config = before
-                if not recovered:
+                try:
+                    # `adopt_hardware_state`, not a hand-rolled copy of the
+                    # DeviceConfig fields. `read_hardware_config` also carries
+                    # `tx_lo_hz` and `gain_control_mode`, and those are what
+                    # say whether the adopted numbers mean anything: `_apply`
+                    # writes the AGC mode fifth of seven, immediately before
+                    # the gains, so failing there leaves AGC live and the
+                    # "gain" a moving value rather than a setting. Adopting it
+                    # silently would report a transient as a configuration.
+                    status = dev.adopt_hardware_state()
+                    recovered = True
+                except Exception:  # noqa: BLE001
+                    status = None
+                if recovered:
+                    # Record what the re-read found, including anything
+                    # adopting could not resolve. `None` here would mean "not
+                    # checked", which is untrue the instant after checking.
+                    self._sync_records[dev.device_id] = {
+                        **status, "device_id": dev.device_id}
+                    adopt_note = (" The write failed part-way; the values "
+                                  "shown were read back from the radio "
+                                  "afterwards rather than assumed.")
+                    if status.get("drift"):
+                        adopt_note += (
+                            " The radio still disagrees on "
+                            + ", ".join(d["field"] for d in status["drift"])
+                            + ".")
+                    if status.get("rx_gain_unstable"):
+                        adopt_note += (" Automatic gain control was left "
+                                       "running, so the receive gain shown is "
+                                       "a sample of a moving value, not a "
+                                       "setting.")
+                else:
                     # Neither the radio nor our cache can be trusted, so do
                     # not assert either. `in_sync: None` is "not checked",
                     # which is a different claim from agreement.
@@ -770,10 +801,6 @@ class Runtime:
                                   "may hold a mixture of the old and new "
                                   "settings, and reading it back also failed. "
                                   "Its configuration is unverified.")
-                else:
-                    adopt_note = (" The write failed part-way; the values "
-                                  "shown were read back from the radio "
-                                  "afterwards rather than assumed.")
                 self.safety.audit("device_config_restore_failed",
                                   device=dev.device_id, error=str(exc),
                                   stage="apply", read_back=recovered)
@@ -829,10 +856,21 @@ class Runtime:
         """
         keys = [dev.device_id]
         info = getattr(dev, "discovery", {}) or {}
-        for alt in (info.get("alternatives") or []):
-            uri = alt.get("uri") if isinstance(alt, dict) else None
-            if uri:
-                keys.append(f"pluto-{uri}")
+        # Only when the grouping rests on a serial number. `group_boards`
+        # returns `identified_by` precisely because "these transports are one
+        # radio" is sometimes an *inference*: with no serial it falls back to
+        # matching attributes, and its own note says two identical Plutos on
+        # identical firmware are indistinguishable that way — as are two
+        # boards whose identity probe failed, since both then fingerprint on
+        # an empty identity. Writing aliases on that inference would save one
+        # radio's configuration under another's id and then apply it to the
+        # wrong hardware, which is worse than the staleness it fixes. Consume
+        # the inference only at the confidence it was offered with.
+        if info.get("identified_by") == "serial":
+            for alt in (info.get("alternatives") or []):
+                uri = alt.get("uri") if isinstance(alt, dict) else None
+                if uri:
+                    keys.append(f"pluto-{uri}")
         return list(dict.fromkeys(keys))
 
     def _save_device_config(self, dev) -> None:

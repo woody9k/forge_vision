@@ -186,7 +186,7 @@ def test_every_transport_of_one_board_shares_a_saved_config(tmp_path):
     2437 MHz / RX 40 dB when the last choice was 2450 MHz / RX 18 dB."""
     rt = restart(tmp_path)
     dev = PreConnectedRadio("pluto-ip:bench")
-    dev.discovery = {"uri": "ip:bench",
+    dev.discovery = {"uri": "ip:bench", "identified_by": "serial",
                      "alternatives": [{"uri": "usb:"}, {"uri": "ip:bench"}]}
     rt._register(dev)
     rt.configure("pluto-ip:bench", {"center_frequency_hz": 2450e6,
@@ -198,10 +198,49 @@ def test_every_transport_of_one_board_shares_a_saved_config(tmp_path):
     assert saved["pluto-usb:"]["rx_gain_db"] == 18.0
 
 
+def test_aliases_are_only_written_when_the_board_is_identified_by_serial(tmp_path):
+    """`group_boards` returns `identified_by` because "these transports are
+    one radio" is sometimes an inference: with no serial it matches on
+    attributes, and two identical Plutos — or two boards whose identity probe
+    failed — are indistinguishable that way. Writing aliases on that would
+    save one radio's configuration under another's id."""
+    rt = restart(tmp_path)
+    dev = PreConnectedRadio("pluto-ip:bench")
+    dev.discovery = {"identified_by": "attributes",
+                     "alternatives": [{"uri": "usb:"}, {"uri": "ip:bench"}]}
+    rt._register(dev)
+    rt.configure("pluto-ip:bench", {"center_frequency_hz": 2450e6})
+
+    assert "pluto-usb:" not in rt._saved_device_configs, (
+        "an attribute-matched grouping is not evidence of one board")
+    assert "pluto-ip:bench" in rt._saved_device_configs
+
+
+def test_a_second_radio_is_not_configured_from_the_first(tmp_path):
+    """The failure this guards: two identical serial-less Plutos group as one,
+    so radio B would be set from radio A's saved config and reported as
+    `restored`."""
+    rt = restart(tmp_path)
+    a = PreConnectedRadio("pluto-ip:radio-a")
+    a.discovery = {"identified_by": "attributes",
+                   "alternatives": [{"uri": "ip:radio-a"}, {"uri": "usb:1.5.5"}]}
+    rt._register(a)
+    rt.configure("pluto-ip:radio-a", {"center_frequency_hz": 2437e6,
+                                      "rx_gain_db": 12.0})
+
+    b = PreConnectedRadio("pluto-usb:1.5.5")     # a *different* radio
+    rt._register(b)
+    assert b.pushed_to_hardware["center_frequency_hz"] != 2437e6, (
+        "radio B must not be tuned from radio A's saved configuration")
+    assert rt.device_config_restore.get("pluto-usb:1.5.5", {}).get(
+        "source", "default") == "default"
+
+
 def test_a_restart_onto_the_other_transport_restores_the_last_choice(tmp_path):
     rt = restart(tmp_path)
     dev = PreConnectedRadio("pluto-ip:bench")
-    dev.discovery = {"alternatives": [{"uri": "usb:"}, {"uri": "ip:bench"}]}
+    dev.discovery = {"identified_by": "serial",
+                     "alternatives": [{"uri": "usb:"}, {"uri": "ip:bench"}]}
     rt._register(dev)
     rt.configure("pluto-ip:bench", {"center_frequency_hz": 2450e6,
                                     "rx_gain_db": 18.0})
