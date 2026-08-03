@@ -284,6 +284,19 @@ The bench right now: a Pluto+ on Ethernet at `pluto.boblab.net`
 deliberately (single-operator lab network, no auth — see docs/DEPLOY.md) and
 the UI is at http://192.168.99.124:8347.
 
+**Nothing else is plugged in**, as of 2026-08-03. The NanoVNA has been
+unplugged since the integration work — plug it into USB-A and it returns as
+`/dev/nanovna`, the udev rule is still installed. An ESP32 dev board is on
+`/dev/ttyUSB0` (CH340, `/dev/esp32`) but it is **flashed with NerdMiner**, a
+bitcoin-miner toy, not sensor firmware: it reports hashrate on serial at
+115200 and would need reflashing before it is any use here. There is **no
+orientation or position sensor on the bench**, so `bearing_sweep` will refuse
+to run — correctly — until one exists.
+
+Chain `test1` still has the log-periodic on **TX** and the whip on RX. For
+pointing work those want swapping: the directional antenna has to be the
+receiver.
+
 **The reported configuration is now reconciled against the radio.** A
 watchdog polls every connected device every 15 s and the UI says whether the
 settings shown are the ones the radio holds. Read that before trusting a
@@ -327,6 +340,26 @@ The 14.7 ns includes 0.97 ns the operator declared for the calibration
 reference plane (the 8 in jumper the thru cal was performed through), which is
 an assumption rather than a measurement. The measured figure alone is
 13.75 ns, cross-checked at 101 and 301 points.
+
+**The spatial sensor, which is what a handheld mapper is now waiting on.**
+Two different problems, and only one of them is solved by an IMU:
+
+- **Where it points** — an MPU-9250 or 9255 is adequate. Note the family
+  differences: the MPU-**6500** is 6-axis with no magnetometer, so yaw drifts
+  without bound and it cannot give absolute bearing; the 9250/9255 add an
+  AK8963 that pins yaw to a few degrees. InvenSense discontinued the 9250 and
+  counterfeits are common — many boards sold as one are a bare 6500 or a
+  relabelled ICM-20948, so scan I2C for the AK8963 at **0x0C** before
+  trusting it. Calibrate the magnetometer *mounted where it will live*: coax,
+  any ground plane and the radio's own supply all distort it.
+- **Where it is** — an IMU cannot do this, and it is not a compute problem.
+  Double-integrating accelerometer bias grows error as t²: even 3 mg residual
+  after careful calibration is ~1.5 m out in 10 s, against a GPR trace
+  spacing target of 2–5 cm. A **wheel encoder** is the answer, does not
+  drift, and is what `SerialSource` already expects via
+  `wheel_circumference_m` and `counts_per_revolution`. Handheld with nothing
+  touching the ground pushes you to optical flow or visual odometry, which is
+  a much larger build.
 
 **The engineering queue**, in the order I would take it. An external review
 produced a longer list; these are the parts that survived verification:
@@ -399,9 +432,19 @@ capture code against this board:
   and the DMA returns a static pattern that scores a *perfect* coherence — a
   flawless-looking result from a radio that is not receiving. The tell is a
   `hardwaregain` readback that does not match what you wrote; recovery is
-  `ensm_mode = fdd`. Seen once, right after a rejected `ensm_mode` write, but
-  with a second writer on the bus at the time the cause is **not established** —
-  do not assume your own last write caused it.
+  `ensm_mode = fdd`, which restores it immediately — verified twice.
+  **Seen twice now**, so treat it as recurring rather than a one-off: once on
+  2026-07-31 right after a rejected `ensm_mode` write, and again on
+  2026-08-02, found with `rx_gain` stuck at −1 dB and refusing every write.
+  Both times there was a second writer on the bus, so the cause is still
+  **not established** — do not assume your own last write caused it. What did
+  change on the second occasion is that the **drift watchdog caught it**:
+  the Dashboard was already reporting "the radio is not holding these
+  settings · rx_gain_db: asked for 40, radio has −1" before anyone went
+  looking. That readback mismatch is the documented tell, and it is now on
+  screen rather than something you have to think to check. Any capture taken
+  while the radio is in this state is fiction that looks immaculate, so treat
+  a sync warning as a reason to distrust data, not just settings.
 - **A persistent RX buffer returns three stale buffers after any attribute
   change.** Measured by switching the BIST mask: refills 1–3 returned the old
   data and only refill 4 reflected the change. `PlutoDevice.receive()` is safe

@@ -168,6 +168,33 @@ will report a different product string; check with
 `udevadm info -a -n /dev/ttyACM0 | grep product` and adjust, or drop the
 `ATTRS{product}` clause if this host has no other STM32 serial devices.
 
+### Position / orientation rig (ESP32 and friends)
+
+Optional; needed only if you drive a survey wheel or an orientation sensor.
+`SerialSource` reads newline-delimited JSON from a microcontroller — it
+already parses `x_m`, `counts`, `heading_deg`, `pitch_deg` and `roll_deg`, so
+a board that emits those needs no code on this side.
+
+ESP32 dev boards and the ESP32-2432S028R ("cheap yellow display") use a
+**CH340** USB-serial bridge, `1a86:7523`, which appears as `/dev/ttyUSB0` —
+`root:dialout 0660`, the same permission wall as the Pluto and the NanoVNA:
+
+```bash
+sudo tee /etc/udev/rules.d/61-esp32-ch340.rules >/dev/null <<'RULE'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", GROUP="plugdev", MODE="0660", SYMLINK+="esp32"
+RULE
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty --action=change
+```
+
+`ls -l /dev/esp32` confirms the rule matched. `1a86:7523` is a generic CH340
+shared by a great many boards, so this rule claims all of them — fine on a
+single-operator bench, worth narrowing by serial number if you ever have two.
+
+**The port list is noisy.** `GET /api/position/ports` reports every
+`/dev/ttyS*` the motherboard exposes — 32 of them on this host, all with
+`hwid: n/a` and nothing attached. A real USB serial device is the entry with
+an actual description and hwid. Worth filtering to USB devices; not done yet.
+
 ### `usb:` or `ip:192.168.2.1` — choosing a backend
 
 A Pluto on USB is a *composite* device: the radio and a USB-ethernet gadget
